@@ -14,7 +14,8 @@ data class TaskInfo(
     val command: String,
     val useShizuku: Boolean = true,
     val type: TaskType = TaskType.COMMAND,
-    val status: TaskStatus = TaskStatus.PENDING,
+    // 运行过程中动态更新：status/endTime/exitCode/output 均为 var
+    var status: TaskStatus = TaskStatus.PENDING,
     val startTime: Long = System.currentTimeMillis(),
     var endTime: Long? = null,
     var output: StringBuilder = StringBuilder(),

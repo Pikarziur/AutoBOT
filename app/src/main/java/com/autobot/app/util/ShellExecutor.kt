@@ -2,7 +2,6 @@ package com.autobot.app.util
 
 import android.util.Log
 import com.autobot.app.manager.ShizukuManager
-import rikka.shizuku.Shizuku
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -101,12 +100,25 @@ object ShellExecutor {
 
     /**
      * 使用 Shizuku 执行命令
+     *
+     * Shizuku v13.1+ 将 Shizuku.newProcess() 标记为 private(@hide)，无法直接调用。
+     * 采用反射方式强制访问：getDeclaredMethod + isAccessible = true
+     * ProGuard 已 keep rikka.shizuku.**，所以方法名不会混淆。
      */
     private fun executeWithShizuku(command: String, timeout: Long): ShellResult {
         return try {
-            // Shizuku 执行命令：newProcess(cmdArray, env, dir)
             val cmdArray = arrayOf("sh", "-c", command)
-            val process = Shizuku.newProcess(cmdArray, null, null)
+
+            // 通过反射调用 Shizuku.newProcess(cmdArray, env, dir)
+            val shizukuClass = Class.forName("rikka.shizuku.Shizuku")
+            val newProcessMethod = shizukuClass.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            newProcessMethod.isAccessible = true
+            val process = newProcessMethod.invoke(null, cmdArray, null, null) as Process
 
             // 读取输出
             val stdoutBuilder = StringBuilder()

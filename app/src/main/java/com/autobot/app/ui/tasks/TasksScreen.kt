@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -170,11 +170,7 @@ fun TasksScreen(
                         .weight(1f)
                 ) {
                     // 复用预览内容（点击进入全屏）
-                    previewContent(
-                        vm = vm,
-                        isFullscreen = false,
-                        onCloseFullscreen = { isFullscreen = true }
-                    )
+                    previewContent(vm, false, { isFullscreen = true })
 
                     // 小窗右上角状态信息
                     MonitorStatusOverlay(
@@ -381,11 +377,7 @@ private fun FullscreenMonitor(
             }
     ) {
         // 复用 movableContentOf 包装的预览内容
-        previewContent(
-            vm = vm,
-            isFullscreen = true,
-            onCloseFullscreen = onExit
-        )
+        previewContent(vm, true, onExit)
 
         // 右上角关闭按钮
         IconButton(
