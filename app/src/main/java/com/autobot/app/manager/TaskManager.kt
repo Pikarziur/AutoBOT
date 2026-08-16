@@ -91,18 +91,45 @@ object TaskManager {
 
     /**
      * 任务执行内部方法
+     *
+     * 关键：调用 ShellExecutor 流式 API，stdout/stderr 每一行
+     *       1. 追加到 task.output 保留历史
+     *       2. 通过 TaskListener.onTaskOutput 通知所有观察者（UI 实时日志显示）
      */
     private suspend fun executeTaskInternal(task: TaskInfo) {
         try {
-            val result = when (task.type) {
+            // 统一给每行加「时间戳 + stdout/stderr」前缀，便于日志观察
+            val prefix = "[${task.id.substring(0, 4)}] "
+            val onOut: (String) -> Unit = { line ->
+                task.output.append("$prefix[OUT] $line\n")
+                listeners.forEach { it.onTaskOutput(task, "[OUT] $line") }
+            }
+            val onErr: (String) -> Unit = { line ->
+                task.output.append("$prefix[ERR] $line\n")
+                listeners.forEach { it.onTaskOutput(task, "[ERR] $line") }
+            }
+
+            val exitCode = when (task.type) {
                 TaskType.COMMAND -> {
-                    executeCommandWithOutput(task)
+                    ShellExecutor.executeStreaming(
+                        task.command, task.useShizuku,
+                        onStdoutLine = onOut,
+                        onStderrLine = onErr
+                    )
                 }
                 TaskType.SCRIPT -> {
-                    ShellExecutor.executeScript(task.command, task.useShizuku)
+                    ShellExecutor.executeScriptStreaming(
+                        task.command, task.useShizuku,
+                        onStdoutLine = onOut,
+                        onStderrLine = onErr
+                    )
                 }
                 TaskType.ADB -> {
-                    ShellExecutor.executeAdbCommand(task.command, useShizuku = task.useShizuku)
+                    ShellExecutor.executeStreaming(
+                        task.command, task.useShizuku,
+                        onStdoutLine = onOut,
+                        onStderrLine = onErr
+                    )
                 }
             }
 
@@ -110,21 +137,18 @@ object TaskManager {
                 return
             }
 
-            task.output.append(result.stdout)
-            if (result.stderr.isNotEmpty()) {
-                task.output.append("\n[STDERR]\n").append(result.stderr)
-            }
-            task.exitCode = result.exitCode
-            task.status = if (result.isSuccess) TaskStatus.COMPLETED else TaskStatus.ERROR
+            task.exitCode = exitCode
+            task.status = if (exitCode == 0) TaskStatus.COMPLETED else TaskStatus.ERROR
             task.endTime = System.currentTimeMillis()
 
             // 从运行中移除
             runningTasks.remove(task.id)
 
-            if (result.isSuccess) {
+            if (exitCode == 0) {
                 listeners.forEach { it.onTaskCompleted(task) }
             } else {
-                listeners.forEach { it.onTaskError(task, result.stderr) }
+                val msg = "Exit code $exitCode"
+                listeners.forEach { it.onTaskError(task, msg) }
             }
 
         } catch (e: Exception) {
@@ -133,17 +157,12 @@ object TaskManager {
             }
             task.status = TaskStatus.ERROR
             task.endTime = System.currentTimeMillis()
-            task.output.append("\n[EXCEPTION]\n").append(e.message)
+            val errLine = "[EXCEPTION] ${e.message ?: "Unknown error"}"
+            task.output.append(errLine).append("\n")
             runningTasks.remove(task.id)
+            listeners.forEach { it.onTaskOutput(task, errLine) }
             listeners.forEach { it.onTaskError(task, e.message ?: "Unknown error") }
         }
-    }
-
-    /**
-     * 带实时输出的命令执行（适用于 COMMAND 类型）
-     */
-    private suspend fun executeCommandWithOutput(task: TaskInfo): ShellExecutor.ShellResult {
-        return ShellExecutor.execute(task.command, task.useShizuku, Long.MAX_VALUE)
     }
 
     /**

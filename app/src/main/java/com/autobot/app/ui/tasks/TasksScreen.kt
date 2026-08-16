@@ -234,7 +234,7 @@ fun TasksScreen(
                 )
             }
 
-            // Tab 内容区 weight=3（任务列表/运行中任务）
+            // 区域 weight=3：任务日志区（实时打印运行中的 stdout/stderr / 开始/停止事件）
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -242,7 +242,7 @@ fun TasksScreen(
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(8.dp)
             ) {
-                TasksListContent(vm = vm)
+                TaskLogContent(vm = vm)
             }
         } else {
             // ============ 全屏模式 ============
@@ -483,38 +483,55 @@ private fun MonitorStatusOverlay(
 }
 
 /**
- * Tab 内容区：后台任务列表（Compose LazyColumn 实现）
+ * 任务日志区域块：实时打印运行中任务的 stdout/stderr / 开始 / 完成 / 停止 / 错误等事件
  *
- * 监听 TaskManager 状态，刷新时通过 remember 触发 recomposition
+ * 特性：
+ * - 顶部标题栏：「任务日志」+「运行中: N」徽章 + 右侧清空按钮
+ * - 主体：LazyColumn 显示 vm.taskLogs 列表，每行使用等宽字体
+ * - 自动滚动到底：当日志新增时，`collectAsStateWithLifecycle` 触发重绘，
+ *   通过 `LaunchedEffect(logs.size)` 自动 `animateScrollToItem(lastIndex)`
+ * - 日志内容区分 [OUT] / [ERR] / ✓ / ✗ / ⏹ 等状态颜色
  */
 @Composable
-private fun TasksListContent(
+private fun TaskLogContent(
     vm: MonitorViewModel,
     modifier: Modifier = Modifier
 ) {
-    // 任务列表：从 TaskManager 读取，通过 ListState 触发刷新
-    var tasks by remember { mutableStateOf(com.autobot.app.manager.TaskManager.getAllTasks()) }
-    var runningCount by remember { mutableStateOf(com.autobot.app.manager.TaskManager.getRunningTasks().size) }
+    val logs by vm.taskLogs.collectAsStateWithLifecycle()
+    val runningCount = remember { mutableStateOf(com.autobot.app.manager.TaskManager.getRunningTasks().size) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
 
-    // 在 Compose 中轮询刷新（简化实现；生产可改用 Flow）
+    // 定时刷新「运行中任务数」（显示在顶部徽章）
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(500)
-        tasks = com.autobot.app.manager.TaskManager.getAllTasks()
-        runningCount = com.autobot.app.manager.TaskManager.getRunningTasks().size
+        while (true) {
+            runningCount.value = com.autobot.app.manager.TaskManager.getRunningTasks().size
+            kotlinx.coroutines.delay(1000)
+        }
     }
 
-    androidx.compose.foundation.lazy.LazyColumn(
-        modifier = modifier.fillMaxSize().padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item {
+    // 日志新增一条自动滚动到底部（最后一条）
+    LaunchedEffect(logs.size) {
+        if (logs.isNotEmpty()) {
+            coroutineScope.launch {
+                listState.animateScrollToItem(logs.size - 1)
+            }
+        }
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        // 顶部标题行
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "后台任务",
+                    text = "任务日志",
                     style = MaterialTheme.typography.titleMedium
                 )
                 Surface(
@@ -522,35 +539,82 @@ private fun TasksListContent(
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(
-                        text = "运行中: $runningCount",
+                        text = "运行中: ${runningCount.value}",
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
             }
+            // 清空日志按钮
+            androidx.compose.material3.TextButton(
+                onClick = { vm.clearLogs() }
+            ) {
+                Text("清空")
+            }
         }
 
-        if (tasks.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 32.dp),
+        // 日志主体：黑底 + 等宽字体，模拟终端
+        androidx.compose.foundation.layout.Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 8.dp)
+                .background(
+                    color = Color(0xFF121212),
+                    shape = MaterialTheme.shapes.small
+                )
+        ) {
+            if (logs.isEmpty()) {
+                // 空态
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "暂无运行中的任务",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "等待执行任务...",
+                        color = Color(0xFFA0A0A0),
+                        fontSize = 12.sp
                     )
                 }
-            }
-        } else {
-            items(tasks) { task ->
-                TaskItemRow(task = task, onStop = { com.autobot.app.manager.TaskManager.stopTask(task.id) })
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    items(logs) { line ->
+                        LogLineItem(line = line)
+                    }
+                }
             }
         }
     }
+}
+
+/**
+ * 单条日志行：根据内容着色
+ *  - [OUT] → 白色
+ *  - [ERR] / [EXCEPTION] / ✗ → 红色
+ *  - ✓ → 绿色
+ *  - ⏹ → 橙色
+ *  - 其他 → 浅灰
+ */
+@Composable
+private fun LogLineItem(line: String) {
+    val color = when {
+        line.contains("[ERR]") || line.contains("[EXCEPTION]") || line.contains("✗") -> Color(0xFFFF5252)
+        line.contains("✓") -> Color(0xFF69F0AE)
+        line.contains("⏹") -> Color(0xFFFFAB40)
+        line.contains("[OUT]") -> Color(0xFFE0E0E0)
+        else -> Color(0xFFBBDEFB)
+    }
+    Text(
+        text = line,
+        color = color,
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+    )
 }
 
 /**

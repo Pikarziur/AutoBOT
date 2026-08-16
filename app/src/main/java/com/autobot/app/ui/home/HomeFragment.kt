@@ -8,21 +8,15 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.lifecycleScope
 import com.autobot.app.R
 import com.autobot.app.databinding.FragmentHomeBinding
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.util.DeviceInfoUtil
-import com.autobot.app.util.ShellExecutor
-import com.google.android.material.color.MaterialColors
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 
 /**
  * 首页 Fragment
- * 展示设备信息、Shizuku授权状态、Shell命令测试功能
+ * 展示设备信息（屏幕分辨率、APP版本）+ Shizuku授权卡片
  */
 class HomeFragment : Fragment() {
 
@@ -74,7 +68,6 @@ class HomeFragment : Fragment() {
 
         initDeviceInfo()
         initShizukuCard()
-        initShellExecution()
     }
 
     override fun onResume() {
@@ -180,56 +173,5 @@ class HomeFragment : Fragment() {
             else -> ContextCompat.getColor(context, R.color.text_secondary)
         }
         binding.tvShizukuStatus.setTextColor(textColor)
-    }
-
-    /**
-     * 初始化 Shell 命令执行测试区域
-     */
-    private fun initShellExecution() {
-        binding.btnExecute.setOnClickListener {
-            val command = binding.etCommand.text?.toString()?.trim()
-            if (command.isNullOrEmpty()) {
-                Toast.makeText(requireContext(), "请输入命令", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            executeCommand(command)
-        }
-    }
-
-    /**
-     * 执行 shell 命令
-     */
-    private fun executeCommand(command: String) {
-        binding.tvResult.text = "执行中: $command..."
-        binding.btnExecute.isEnabled = false
-
-        val useShizuku = ShizukuManager.isShizukuGranted()
-
-        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            val result = ShellExecutor.execute(command, useShizuku = useShizuku)
-
-            withContext(Dispatchers.Main) {
-                binding.btnExecute.isEnabled = true
-                val resultText = buildString {
-                    append("[命令] $command\n")
-                    append("[使用Shizuku] $useShizuku\n")
-                    append("[退出码] ${result.exitCode}\n")
-                    append("=".repeat(40)).append("\n")
-                    if (result.stdout.isNotEmpty()) {
-                        append("[STDOUT]\n${result.stdout}\n")
-                    }
-                    if (result.stderr.isNotEmpty()) {
-                        append("[STDERR]\n${result.stderr}\n")
-                    }
-                    if (result.exitCode == -2) {
-                        append("\n* 命令执行超时")
-                    }
-                    if (result.stdout.isEmpty() && result.stderr.isEmpty()) {
-                        append("(无输出)")
-                    }
-                }
-                binding.tvResult.text = resultText
-            }
-        }
     }
 }

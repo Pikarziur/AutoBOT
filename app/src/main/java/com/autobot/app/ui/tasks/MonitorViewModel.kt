@@ -6,9 +6,11 @@ import android.util.Log
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.ScriptTaskManager
+import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.TaskManager
+import com.autobot.app.model.TaskMode
+import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.service.CompositionService
@@ -17,6 +19,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 虚拟显示器预览 ViewModel
@@ -104,6 +109,58 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _executeMessage = MutableStateFlow<String?>(null)
     val executeMessage: StateFlow<String?> = _executeMessage.asStateFlow()
 
+    /**
+     * 任务日志流（UI 实时显示用）
+     * - 每行格式：[HH:mm:ss] [任务名/ID] [OUT]/[ERR]/[START]/[DONE] ... 内容
+     * - 用 List<String> 以便 Compose LazyColumn 逐条渲染并自动滚动到底
+     * - 保留最多 500 行，避免内存无限增长
+     */
+    private val _taskLogs = MutableStateFlow<List<String>>(emptyList())
+    val taskLogs: StateFlow<List<String>> = _taskLogs.asStateFlow()
+
+    private val logLock = Any()
+    private val logSdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+    companion object {
+        private const val LOG_MAX_LINES = 500
+    }
+
+    /**
+     * TaskManager 事件监听器：将任务生命周期和输出转为 UI 日志
+     */
+    private val taskListener = object : TaskManager.TaskListener {
+        override fun onTaskStarted(task: com.autobot.app.model.TaskInfo) {
+            appendLog("[${stamp()}] ⟶ 启动任务『${task.name}』 (id=${task.id.substring(0, 4)} type=${task.type})")
+        }
+        override fun onTaskOutput(task: com.autobot.app.model.TaskInfo, line: String) {
+            appendLog("[${stamp()}] [${task.id.substring(0, 4)}] $line")
+        }
+        override fun onTaskCompleted(task: com.autobot.app.model.TaskInfo) {
+            val duration = task.getDurationText()
+            appendLog("[${stamp()}] ✓ 任务『${task.name}』完成 (exit=${task.exitCode}, duration=$duration)")
+        }
+        override fun onTaskStopped(task: com.autobot.app.model.TaskInfo) {
+            appendLog("[${stamp()}] ⏹ 任务『${task.name}』被停止 (id=${task.id.substring(0, 4)})")
+        }
+        override fun onTaskError(task: com.autobot.app.model.TaskInfo, error: String) {
+            appendLog("[${stamp()}] ✗ 任务『${task.name}』出错: $error")
+        }
+    }
+
+    private fun stamp(): String = logSdf.format(Date())
+
+    /** 追加一行日志（最多保留 500 行），线程安全 */
+    private fun appendLog(line: String) {
+        synchronized(logLock) {
+            val list = _taskLogs.value.toMutableList()
+            list.add(line)
+            while (list.size > LOG_MAX_LINES) {
+                list.removeAt(0)
+            }
+            _taskLogs.value = list
+        }
+    }
+
     init {
         // 尝试加载 Native 库
         try {
@@ -113,6 +170,20 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
         // 加载已持久化的 SH 脚本任务列表
         refreshScriptTasks()
+        // 注册 TaskManager 监听器：实时将任务日志推给 UI
+        TaskManager.addListener(taskListener)
+        // 欢迎日志（避免空列表）
+        appendLog("[${stamp()}] 日志区就绪：SH-ADB 任务执行后 stdout/stderr 将实时显示在此")
+    }
+
+    /**
+     * 清空 UI 任务日志（仅清空显示，不影响 TaskManager 的历史）
+     */
+    fun clearLogs() {
+        synchronized(logLock) {
+            _taskLogs.value = emptyList()
+            appendLog("[${stamp()}] 日志已清空")
+        }
     }
 
     /**
@@ -356,9 +427,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
-        super.onCleared()
+        TaskManager.removeListener(taskListener)
         compositionService.stopVirtualDisplay()
         _isRunning.value = false
         _previewSurface.value = null
+        super.onCleared()
     }
 }
