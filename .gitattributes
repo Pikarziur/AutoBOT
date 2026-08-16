@@ -1,2 +1,73 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Git 换行符与二进制文件处理规则
+# 解决 Windows 上 LF/CRLF 自动转换警告，保证跨平台一致
+# 关键：sh 脚本必须强制 LF（GitHub Actions 在 Linux 上执行，CRLF 会报错）
+
+# 默认：所有文本文件自动规范化为 LF（提交时转换，checkout 时保持 LF）
+* text=auto eol=lf
+
+# Windows 专用批处理文件：保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell 脚本：强制 LF（Linux/macOS 执行，CRLF 会导致 bad interpreter）
+*.sh text eol=lf
+*.bash text eol=lf
+
+# 各类源码：强制 LF
+*.kt text eol=lf
+*.java text eol=lf
+*.xml text eol=lf
+*.gradle text eol=lf
+*.gradle.kts text eol=lf
+*.properties text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# Native 代码：强制 LF
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cc text eol=lf
+
+# CMake：强制 LF
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+
+# Makefile：必须用 LF（依赖 Tab 缩进）
+Makefile text eol=lf
+*.mk text eol=lf
+
+# 二进制文件：不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.bmp binary
+*.apk binary
+*.jar binary
+*.aar binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.keystore binary
+*.jks binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.mp4 binary
+*.wav binary
+*.ogg binary
