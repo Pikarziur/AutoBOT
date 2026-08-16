@@ -70,20 +70,29 @@ jobs:
           validate-wrappers: false # 允许 CI 新生成的 wrapper
 
       # ---- Step 5: 安装 Android SDK 所需组件（含 NDK + CMake 用于 Native 编译）----
-      # 使用 android-actions/setup-android@v3 自动配置 cmdline-tools 与 PATH
-      # 比 `sdkmanager` 命令更稳定，无需手动查找 sdkmanager 路径
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # v4 支持 Node 24；只用它安装 cmdline-tools 并把 sdkmanager 加入 PATH
+      - name: Setup Android SDK (cmdline-tools + PATH)
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
-            platform-tools
-            cmdline-tools;latest
-            ndk;25.2.9519653
-            cmake;3.22.1
+          # 不在 packages 中列组件，避免 v3 多行 packages 被合并成单字符串的 bug
+          packages: ''
+
+      # 用 sdkmanager 命令逐个安装组件（每个包名独立参数，避免解析问题）
+      - name: Install Android SDK Components
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "sdkmanager path: $(which sdkmanager)"
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            "ndk;25.2.9519653" \
+            "cmake;3.22.1"
+          echo "✅ SDK components installed"
+          sdkmanager --list_installed || sdkmanager --list | head -50
+        shell: bash
 
       # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
       - name: Build Debug APK
