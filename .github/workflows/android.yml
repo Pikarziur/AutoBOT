@@ -27,26 +27,29 @@ jobs:
           distribution: "temurin"
           java-version: ${{ env.JAVA_VERSION }}
 
-      # ---- Step 2: 若仓库缺少 gradle-wrapper.jar，通过下载官方 Gradle 包生成完整 wrapper ----
+      # ---- Step 2: 通过 gradle/actions/setup-gradle@v4 自动安装 Gradle 8.5 ----
+      # 关键：用官方 action 安装 Gradle，比手动 curl 下载 130MB zip 稳定得多
+      # 同时启用 Gradle 依赖缓存加速后续编译
+      - name: Setup Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-read-only: false
+          validate-wrappers: false
+
+      # ---- Step 3: 若仓库缺少 gradle-wrapper.jar，用已安装的 gradle 命令生成 ----
+      # 此时 gradle 8.5 已在 PATH 中，直接调用即可
       - name: Generate Gradle Wrapper (if jar missing)
         run: |
           if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "✅ gradle-wrapper.jar already exists, skip generation"
+            ls -la gradle/wrapper/
             exit 0
           fi
 
-          echo "⚠️ gradle-wrapper.jar not found. Downloading Gradle $GRADLE_VERSION distribution..."
-          GRADLE_ZIP_URL="https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
-          GRADLE_TMP_DIR="/tmp/gradle-install"
-          mkdir -p "$GRADLE_TMP_DIR"
-          curl -fsSL "$GRADLE_ZIP_URL" -o "/tmp/gradle-${GRADLE_VERSION}.zip"
-          unzip -q "/tmp/gradle-${GRADLE_VERSION}.zip" -d "$GRADLE_TMP_DIR"
-
-          export GRADLE_HOME="$GRADLE_TMP_DIR/gradle-${GRADLE_VERSION}"
-          export PATH="$GRADLE_HOME/bin:$PATH"
-
-          echo "🔧 Generating wrapper via installed gradle..."
-          gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin
+          echo "⚠️ gradle-wrapper.jar not found. Generating via gradle command..."
+          echo "gradle version: $(gradle --version)"
+          gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin --no-daemon
 
           if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "✅ Generated gradle-wrapper.jar successfully:"
@@ -58,16 +61,9 @@ jobs:
           fi
         shell: bash
 
-      # ---- Step 3: 给 gradlew 执行权限（Git 有时丢失） ----
+      # ---- Step 4: 给 gradlew 执行权限（Git 有时丢失） ----
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-
-      # ---- Step 4: Gradle Build Action 缓存加速 + 配置 Android SDK ----
-      - name: Gradle Build Action
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
-          validate-wrappers: false # 允许 CI 新生成的 wrapper
 
       # ---- Step 5: 安装 Android SDK 所需组件（含 NDK + CMake 用于 Native 编译）----
       # v4 支持 Node 24；只用它安装 cmdline-tools 并把 sdkmanager 加入 PATH
@@ -76,7 +72,7 @@ jobs:
         with:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
-          # 不在 packages 中列组件，避免 v3 多行 packages 被合并成单字符串的 bug
+          # 不在 packages 中列组件，避免多行 packages 被合并成单字符串的 bug
           packages: ''
 
       # 用 sdkmanager 命令逐个安装组件（每个包名独立参数，避免解析问题）
@@ -95,8 +91,16 @@ jobs:
         shell: bash
 
       # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
+      # 优先用 ./gradlew，若 wrapper 仍有问题则 fallback 到 gradle 命令
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: |
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          else
+            echo "⚠️ wrapper jar missing, using gradle directly"
+            gradle assembleDebug --stacktrace --no-daemon
+          fi
+        shell: bash
 
       # ---- Step 7: 可选：编译 Release APK（无密钥时使用 debug 签名，方便测试） ----
       - name: Build Release APK (signed with debug keystore)
@@ -109,12 +113,21 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=AutoBOT Debug, OU=AutoBOT, O=AutoBOT, L=CN, ST=CN, C=CN" \
             || true
-          ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=androiddebugkey \
-            -Pandroid.injected.signing.key.password=android \
-            --stacktrace --no-daemon || true
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
+              -Pandroid.injected.signing.store.password=android \
+              -Pandroid.injected.signing.key.alias=androiddebugkey \
+              -Pandroid.injected.signing.key.password=android \
+              --stacktrace --no-daemon || true
+          else
+            gradle assembleRelease \
+              -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
+              -Pandroid.injected.signing.store.password=android \
+              -Pandroid.injected.signing.key.alias=androiddebugkey \
+              -Pandroid.injected.signing.key.password=android \
+              --stacktrace --no-daemon || true
+          fi
         shell: bash
 
       # ---- Step 8: 上传 Debug APK Artifact ----
