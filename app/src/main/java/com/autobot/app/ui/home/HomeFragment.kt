@@ -36,10 +36,13 @@ class HomeFragment : Fragment() {
     private val shizukuPermissionRequestListener =
         Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
             if (requestCode == SHIZUKU_REQUEST_CODE) {
+                // 回调时 Fragment 可能已 detached，先检查 isAdded
+                if (!isAdded || view == null) return@OnRequestPermissionResultListener
+                val ctx = context ?: return@OnRequestPermissionResultListener
                 if (grantResult == PackageManager.PERMISSION_GRANTED) {
-                    Toast.makeText(requireContext(), "Shizuku 授权成功", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "Shizuku 授权成功", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(requireContext(), "Shizuku 授权失败", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "Shizuku 授权失败", Toast.LENGTH_SHORT).show()
                 }
                 updateShizukuUI()
             }
@@ -58,7 +61,16 @@ class HomeFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         // 注册 Shizuku 权限回调
-        Shizuku.addRequestPermissionResultListener(shizukuPermissionRequestListener)
+        // 注意：Shizuku 未安装/未启动时 addRequestPermissionResultListener 会抛异常
+        //       必须套 try-catch；ShizukuManager.isShizukuConnected 内部也会 pingBinder 抛异常捕获
+        try {
+            if (ShizukuManager.isShizukuInstalled(requireContext()) &&
+                ShizukuManager.isShizukuConnected()) {
+                Shizuku.addRequestPermissionResultListener(shizukuPermissionRequestListener)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("HomeFragment", "Shizuku addListener skipped", e)
+        }
 
         initDeviceInfo()
         initShizukuCard()
@@ -72,7 +84,14 @@ class HomeFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
-        Shizuku.removeRequestPermissionResultListener(shizukuPermissionRequestListener)
+        try {
+            // 只有已注册过才能安全 remove；Shizuku 未连接时 remove 同样会崩
+            if (ShizukuManager.isShizukuConnected()) {
+                Shizuku.removeRequestPermissionResultListener(shizukuPermissionRequestListener)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("HomeFragment", "Shizuku removeListener skipped", e)
+        }
         _binding = null
     }
 
