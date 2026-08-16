@@ -67,7 +67,10 @@
                     <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switchAutoConnect"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" />
+                        android:layout_height="wrap_content"
+                        android:textOn=""
+                        android:textOff=""
+                        app:showText="false" />
                 </LinearLayout>
 
                 <View
