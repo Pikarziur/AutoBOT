@@ -38,10 +38,14 @@ object DisplayServiceShizuku {
 
     /**
      * 持有创建好的虚拟显示器引用（释放时调用其 release 反射方法）
+     *
+     * @param displayId 虚拟显示器的 Display ID
+     *                  用法：`am start --display <displayId> -n pkg/cls` 可让 App 在此虚拟显示器上启动
      */
     class VirtualDisplayHandle(
         private val virtualDisplay: Any,
-        private val releaseMethod: java.lang.reflect.Method
+        private val releaseMethod: java.lang.reflect.Method,
+        val displayId: Int
     ) {
         fun release() {
             try {
@@ -225,8 +229,21 @@ object DisplayServiceShizuku {
             val virtualDisplayClass = Class.forName("android.hardware.display.VirtualDisplay")
             val releaseMethod = virtualDisplayClass.getMethod("release")
 
-            Log.i(TAG, "VirtualDisplay created: $name ${width}x${height}")
-            VirtualDisplayHandle(virtualDisplay, releaseMethod)
+            // 反射获取 Display ID：VirtualDisplay.getDisplay().getDisplayId()
+            //   用途：传给 am start --display <id> 让 App 启动到此虚拟显示器上
+            val displayId = try {
+                val getDisplay = virtualDisplayClass.getMethod("getDisplay")
+                val display = getDisplay.invoke(virtualDisplay)
+                val displayClass = Class.forName("android.view.Display")
+                val getDisplayId = displayClass.getMethod("getDisplayId")
+                getDisplayId.invoke(display) as Int
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to get displayId via reflection, fallback to -1", e)
+                -1
+            }
+
+            Log.i(TAG, "VirtualDisplay created: $name ${width}x${height} displayId=$displayId")
+            VirtualDisplayHandle(virtualDisplay, releaseMethod, displayId)
         } catch (e: Exception) {
             Log.e(TAG, "createVirtualDisplay failed", e)
             null

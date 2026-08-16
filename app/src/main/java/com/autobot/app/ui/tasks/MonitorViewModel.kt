@@ -56,6 +56,13 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
+    /**
+     * 虚拟显示器 Display ID（用于让 App 启动到虚拟显示器）
+     * - 已启动：>0
+     * - 未启动：-1
+     */
+    val displayId: Int get() = compositionService.displayId
+
     /** 已捕获帧数 */
     private val _frameCount = MutableStateFlow(0L)
     val frameCount: StateFlow<Long> = _frameCount.asStateFlow()

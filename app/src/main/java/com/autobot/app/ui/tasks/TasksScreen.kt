@@ -201,7 +201,9 @@ fun TasksScreen(
                         launching = true
                         scope.launch(Dispatchers.IO) {
                             try {
-                                AppManager.launchApp(context, app.packageName)
+                                // 传入虚拟显示器 displayId：让 App 启动到预览区的虚拟显示器上
+                                // 而不是跳转到前台主屏（displayId<=0 时退化为前台启动）
+                                AppManager.launchApp(context, app.packageName, vm.displayId)
                             } finally {
                                 launching = false
                             }
@@ -490,9 +492,6 @@ private fun TasksListContent(
     vm: MonitorViewModel,
     modifier: Modifier = Modifier
 ) {
-    val isRunning by vm.isRunning.collectAsStateWithLifecycle()
-    val frameCount by vm.frameCount.collectAsStateWithLifecycle()
-
     // 任务列表：从 TaskManager 读取，通过 ListState 触发刷新
     var tasks by remember { mutableStateOf(com.autobot.app.manager.TaskManager.getAllTasks()) }
     var runningCount by remember { mutableStateOf(com.autobot.app.manager.TaskManager.getRunningTasks().size) }
@@ -529,14 +528,6 @@ private fun TasksListContent(
                     )
                 }
             }
-        }
-
-        item {
-            Text(
-                text = "虚拟显示器：${if (isRunning) "运行中" else "未启动"} · 帧数: $frameCount",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
 
         if (tasks.isEmpty()) {

@@ -55,8 +55,10 @@ object AppManager {
         val launchIntent = Intent(Intent.ACTION_MAIN, null).apply {
             addCategory(Intent.CATEGORY_LAUNCHER)
         }
-        // MATCH_ALL：同时返回已启用/禁用组件；不额外加 flags 保证兼容性
-        val flag = PackageManager.MATCH_DEFAULT_ONLY
+        // MATCH_ALL：返回所有匹配项，包括禁用的组件（避免漏掉被系统禁用但有 launcher 入口的 App）
+        //   注：MATCH_DEFAULT_ONLY 只会返回带 DEFAULT category 的，会漏掉很多 App
+        //   Android 11+ 还需 QUERY_ALL_PACKAGES 权限（已在 Manifest 声明）
+        val flag = PackageManager.MATCH_ALL
         val resolveInfos = pm.queryIntentActivities(launchIntent, flag)
 
         val seenPackages = HashSet<String>()
@@ -122,13 +124,18 @@ object AppManager {
      *
      * 策略：
      *   1. 优先通过 Shizuku 调用 `am start` 命令启动（可跨进程/后台启动，稳定性更高）
+     *      - 若 displayId > 0：附加 `--display <displayId>` 让 App 启动到指定虚拟显示器
+     *        （这样 App 画面会出现在虚拟显示器预览区，而不是跳转到前台主屏）
      *   2. 若 Shizuku 不可用则回退为普通 Context.startActivity（需要前台可见，且受后台启动限制）
+     *      注意：回退路径无法指定 displayId，App 会在默认显示器（前台）启动
      *
      * @param context     回退到 startActivity 时使用；可传 null（当确认 Shizuku 可用时）
      * @param packageName 目标应用包名
+     * @param displayId   虚拟显示器 ID（>0 时通过 am start --display 启动到虚拟显示器；
+     *                    <=0 时在默认显示器/前台启动）
      * @return true 表示启动命令已成功发出
      */
-    fun launchApp(context: Context?, packageName: String): Boolean {
+    fun launchApp(context: Context?, packageName: String, displayId: Int = -1): Boolean {
         if (packageName.isBlank()) {
             Log.w(TAG, "launchApp: empty packageName")
             return false
@@ -136,29 +143,32 @@ object AppManager {
 
         // 1. Shizuku 路径：am start -n 启动 launcher Activity；若启动失败再用 monkey -p 兜底
         if (com.autobot.app.manager.ShizukuManager.isShizukuGranted()) {
-            val launchActivityCmd = "am start -n $packageName/" +
+            // 构造 am start 命令：可选附加 --display <id> 启动到虚拟显示器
+            val displayArg = if (displayId > 0) " --display $displayId" else ""
+            val launchActivityCmd = "am start$displayArg -n $packageName/" +
                     (resolveLauncherActivity(context, packageName) ?: "")
             val r1 = ShellExecutor.execute(
                 launchActivityCmd, useShizuku = true, timeout = 3000
             )
             if (r1.isSuccess) {
-                Log.i(TAG, "launchApp (am start) success: $packageName")
+                Log.i(TAG, "launchApp (am start) success: $packageName displayId=$displayId")
                 return true
             }
 
             // 回退：用 monkey 模拟点击启动（不需要知道具体 Activity 名）
+            //   monkey 不支持 --display，无法启动到虚拟显示器，仅作为兜底
             val monkeyCmd = "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
             val r2 = ShellExecutor.execute(
                 monkeyCmd, useShizuku = true, timeout = 5000
             )
             if (r2.isSuccess) {
-                Log.i(TAG, "launchApp (monkey) success: $packageName")
+                Log.i(TAG, "launchApp (monkey) success: $packageName (no display target)")
                 return true
             }
             Log.w(TAG, "launchApp shizuku failed: am=${r1.stderr}, monkey=${r2.stderr}")
         }
 
-        // 2. 普通路径：从当前前台 Activity 启动
+        // 2. 普通路径：从当前前台 Activity 启动（无法指定 displayId）
         val ctx = context ?: run {
             Log.e(TAG, "launchApp: context is null and shizuku unavailable")
             return false
@@ -169,7 +179,7 @@ object AppManager {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try {
                 ctx.startActivity(launchIntent)
-                Log.i(TAG, "launchApp (startActivity) success: $packageName")
+                Log.i(TAG, "launchApp (startActivity) success: $packageName (default display)")
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "launchApp startActivity failed", e)

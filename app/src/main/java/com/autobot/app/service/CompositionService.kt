@@ -54,6 +54,16 @@ class CompositionService {
         private set
 
     /**
+     * 虚拟显示器的 Display ID
+     *
+     * - 创建成功后通过反射从 VirtualDisplay.getDisplay().getDisplayId() 获取
+     * - 用途：`am start --display <displayId>` 让目标 App 启动到此虚拟显示器上
+     *   （而不是默认显示器/前台）
+     * - 未启动时返回 -1
+     */
+    val displayId: Int get() = virtualDisplayHandle?.displayId ?: -1
+
+    /**
      * 启动虚拟显示器（无需 MediaProjection，依赖 Shizuku shell 权限）
      *
      * 内部步骤：
