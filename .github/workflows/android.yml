@@ -1,0 +1,138 @@
+name: Build AutoBOT APK
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+env:
+  GRADLE_VERSION: "8.5"
+  JAVA_VERSION: "17"
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- Step 1: 安装 JDK (AGP 8.2 必须 JDK 17+) ----
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # ---- Step 2: 若仓库缺少 gradle-wrapper.jar，通过下载官方 Gradle 包生成完整 wrapper ----
+      - name: Generate Gradle Wrapper (if jar missing)
+        run: |
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "✅ gradle-wrapper.jar already exists, skip generation"
+            exit 0
+          fi
+
+          echo "⚠️ gradle-wrapper.jar not found. Downloading Gradle $GRADLE_VERSION distribution..."
+          GRADLE_ZIP_URL="https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+          GRADLE_TMP_DIR="/tmp/gradle-install"
+          mkdir -p "$GRADLE_TMP_DIR"
+          curl -fsSL "$GRADLE_ZIP_URL" -o "/tmp/gradle-${GRADLE_VERSION}.zip"
+          unzip -q "/tmp/gradle-${GRADLE_VERSION}.zip" -d "$GRADLE_TMP_DIR"
+
+          export GRADLE_HOME="$GRADLE_TMP_DIR/gradle-${GRADLE_VERSION}"
+          export PATH="$GRADLE_HOME/bin:$PATH"
+
+          echo "🔧 Generating wrapper via installed gradle..."
+          gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin
+
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "✅ Generated gradle-wrapper.jar successfully:"
+            ls -la gradle/wrapper/
+          else
+            echo "❌ Failed to generate gradle-wrapper.jar"
+            ls -la gradle/ || true
+            exit 1
+          fi
+        shell: bash
+
+      # ---- Step 3: 给 gradlew 执行权限（Git 有时丢失） ----
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ---- Step 4: Gradle Build Action 缓存加速 + 配置 Android SDK ----
+      - name: Gradle Build Action
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          validate-wrappers: false # 允许 CI 新生成的 wrapper
+
+      # ---- Step 5: 安装 Android SDK 所需组件（含 NDK + CMake 用于 Native 编译）----
+      - name: Accept Android SDK Licenses & Install Components
+        run: |
+          yes | sdkmanager --sdk_root=${ANDROID_HOME} --licenses || true
+          sdkmanager --sdk_root=${ANDROID_HOME} \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            "cmdline-tools;latest" \
+            "ndk;25.2.9519653" \
+            "cmake;3.22.1" \
+            > /dev/null
+        shell: bash
+
+      # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      # ---- Step 7: 可选：编译 Release APK（无密钥时使用 debug 签名，方便测试） ----
+      - name: Build Release APK (signed with debug keystore)
+        run: |
+          # 创建一个临时 debug keystore 用于 release
+          keytool -genkeypair -v \
+            -keystore $HOME/debug.keystore \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=AutoBOT Debug, OU=AutoBOT, O=AutoBOT, L=CN, ST=CN, C=CN" \
+            || true
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android \
+            --stacktrace --no-daemon || true
+        shell: bash
+
+      # ---- Step 8: 上传 Debug APK Artifact ----
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoBOT-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---- Step 9: 上传 Release APK Artifact ----
+      - name: Upload Release APK (if built)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoBOT-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # ---- Step 10: 上传 mapping & logs（排查用） ----
+      - name: Upload Build Outputs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            app/build/reports/**
+            app/build/outputs/logs/**
+            **/*.log
+          if-no-files-found: ignore
+          retention-days: 7

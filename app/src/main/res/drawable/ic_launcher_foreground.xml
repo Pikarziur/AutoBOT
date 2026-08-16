@@ -1,0 +1,66 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 机器人身体 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,64 L30,88 Q30,94 36,94 L40,94 L40,78 L44,78 L44,94 L64,94 L64,78 L68,78 L68,94 L72,94 Q78,94 78,88 L78,64 Z" />
+
+    <!-- 机器人头部 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M28,42 Q28,32 38,32 L70,32 Q80,32 80,42 L80,54 L80,56 L28,56 L28,54 Z" />
+
+    <!-- 头部天线 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M42,32 L38,22 M66,32 L70,22" />
+
+    <!-- 头部天线端点 -->
+    <circle
+        android:fillColor="#FFFFFF"
+        android:cx="38"
+        android:cy="20"
+        android:radius="3" />
+    <circle
+        android:fillColor="#FFFFFF"
+        android:cx="70"
+        android:cy="20"
+        android:radius="3" />
+
+    <!-- 左眼 -->
+    <circle
+        android:fillColor="@color/primary_dark"
+        android:cx="45"
+        android:cy="44"
+        android:radius="4" />
+    <!-- 右眼 -->
+    <circle
+        android:fillColor="@color/primary_dark"
+        android:cx="63"
+        android:cy="44"
+        android:radius="4" />
+
+    <!-- 嘴巴/屏幕 -->
+    <path
+        android:fillColor="@color/primary_dark"
+        android:pathData="M42,51 L66,51 L66,55 L42,55 Z" />
+
+    <!-- 手臂 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M20,64 L28,64 L28,82 L20,82 Q14,82 14,76 L14,70 Q14,64 20,64 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M88,64 L80,64 L80,82 L88,82 Q94,82 94,76 L94,70 Q94,64 88,64 Z" />
+
+    <!-- 闪电符号（代表自动化/快速） -->
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M52,60 L46,74 L52,74 L48,88 L62,70 L56,70 L60,60 Z" />
+</vector>

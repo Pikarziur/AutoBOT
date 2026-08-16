@@ -1,0 +1,216 @@
+package com.autobot.app.ui.home
+
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import com.autobot.app.R
+import com.autobot.app.databinding.FragmentHomeBinding
+import com.autobot.app.manager.ShizukuManager
+import com.autobot.app.util.DeviceInfoUtil
+import com.autobot.app.util.ShellExecutor
+import com.google.android.material.color.MaterialColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
+
+/**
+ * 首页 Fragment
+ * 展示设备信息、Shizuku授权状态、Shell命令测试功能
+ */
+class HomeFragment : Fragment() {
+
+    private var _binding: FragmentHomeBinding? = null
+    private val binding get() = _binding!!
+
+    // Shizuku 权限请求码
+    private val SHIZUKU_REQUEST_CODE = 1001
+
+    // Shizuku 权限请求回调
+    private val shizukuPermissionRequestListener =
+        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode == SHIZUKU_REQUEST_CODE) {
+                if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(requireContext(), "Shizuku 授权成功", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(requireContext(), "Shizuku 授权失败", Toast.LENGTH_SHORT).show()
+                }
+                updateShizukuUI()
+            }
+        }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentHomeBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // 注册 Shizuku 权限回调
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionRequestListener)
+
+        initDeviceInfo()
+        initShizukuCard()
+        initShellExecution()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateShizukuUI()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionRequestListener)
+        _binding = null
+    }
+
+    /**
+     * 初始化设备信息显示
+     */
+    private fun initDeviceInfo() {
+        // 屏幕分辨率 - 自动获取
+        val resolutionText = DeviceInfoUtil.getScreenResolutionText(requireContext())
+        binding.tvResolution.text = resolutionText
+
+        // APP版本 - 默认0.01
+        val versionName = DeviceInfoUtil.getAppVersionName(requireContext())
+        binding.tvVersion.text = versionName
+    }
+
+    /**
+     * 初始化 Shizuku 授权卡片
+     */
+    private fun initShizukuCard() {
+        updateShizukuUI()
+
+        // 点击卡片或开关都触发跳转/授权逻辑
+        val clickListener = View.OnClickListener {
+            handleShizukuClick()
+        }
+        binding.cardShizuku.setOnClickListener(clickListener)
+        binding.switchShizuku.setOnClickListener {
+            handleShizukuClick()
+        }
+    }
+
+    /**
+     * 处理 Shizuku 卡片点击事件
+     * 优先级：
+     * 1. 未安装 -> 提示
+     * 2. 未连接 -> 跳转 Shizuku App
+     * 3. 已连接未授权 -> 请求权限
+     * 4. 已授权 -> 跳转 Shizuku App 管理
+     */
+    private fun handleShizukuClick() {
+        val context = requireContext()
+        when (ShizukuManager.getShizukuStatusCode(context)) {
+            0 -> {
+                // 未安装
+                Toast.makeText(context, R.string.shizuku_not_installed, Toast.LENGTH_LONG).show()
+                binding.switchShizuku.isChecked = false
+            }
+            1 -> {
+                // 未连接 - 跳转 Shizuku App 启动服务
+                val opened = ShizukuManager.openShizukuApp(context)
+                if (!opened) {
+                    Toast.makeText(context, "无法打开 Shizuku", Toast.LENGTH_SHORT).show()
+                }
+                binding.switchShizuku.isChecked = false
+            }
+            2 -> {
+                // 已连接未授权 - 请求权限
+                ShizukuManager.requestShizukuPermission(SHIZUKU_REQUEST_CODE)
+            }
+            3 -> {
+                // 已授权 - 跳转 Shizuku App 管理
+                val opened = ShizukuManager.openShizukuApp(context)
+                if (!opened) {
+                    Toast.makeText(context, "无法打开 Shizuku", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    /**
+     * 更新 Shizuku UI 状态
+     */
+    private fun updateShizukuUI() {
+        val context = requireContext()
+        val statusCode = ShizukuManager.getShizukuStatusCode(context)
+        val statusText = ShizukuManager.getShizukuStatusText(context)
+
+        binding.tvShizukuStatus.text = statusText
+        binding.switchShizuku.isChecked = statusCode == 3
+
+        // 根据状态设置文字颜色
+        val textColor = when (statusCode) {
+            3 -> ContextCompat.getColor(context, R.color.success)
+            2 -> ContextCompat.getColor(context, R.color.warning)
+            else -> ContextCompat.getColor(context, R.color.text_secondary)
+        }
+        binding.tvShizukuStatus.setTextColor(textColor)
+    }
+
+    /**
+     * 初始化 Shell 命令执行测试区域
+     */
+    private fun initShellExecution() {
+        binding.btnExecute.setOnClickListener {
+            val command = binding.etCommand.text?.toString()?.trim()
+            if (command.isNullOrEmpty()) {
+                Toast.makeText(requireContext(), "请输入命令", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            executeCommand(command)
+        }
+    }
+
+    /**
+     * 执行 shell 命令
+     */
+    private fun executeCommand(command: String) {
+        binding.tvResult.text = "执行中: $command..."
+        binding.btnExecute.isEnabled = false
+
+        val useShizuku = ShizukuManager.isShizukuGranted()
+
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            val result = ShellExecutor.execute(command, useShizuku = useShizuku)
+
+            withContext(Dispatchers.Main) {
+                binding.btnExecute.isEnabled = true
+                val resultText = buildString {
+                    append("[命令] $command\n")
+                    append("[使用Shizuku] $useShizuku\n")
+                    append("[退出码] ${result.exitCode}\n")
+                    append("=".repeat(40)).append("\n")
+                    if (result.stdout.isNotEmpty()) {
+                        append("[STDOUT]\n${result.stdout}\n")
+                    }
+                    if (result.stderr.isNotEmpty()) {
+                        append("[STDERR]\n${result.stderr}\n")
+                    }
+                    if (result.exitCode == -2) {
+                        append("\n* 命令执行超时")
+                    }
+                    if (result.stdout.isEmpty() && result.stderr.isEmpty()) {
+                        append("(无输出)")
+                    }
+                }
+                binding.tvResult.text = resultText
+            }
+        }
+    }
+}
