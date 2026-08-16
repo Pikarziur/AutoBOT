@@ -105,6 +105,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.runtime:runtime")
+    // Material Icons Extended：提供 RadioButtonChecked/Unchecked、Image、Add、Delete 等图标
+    // core 包不含这些图标，CI 编译会报 unresolved reference
+    implementation("androidx.compose.material:material-icons-extended")
     // Compose 与 Fragment/Activity 集成
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
