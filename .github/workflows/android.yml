@@ -70,18 +70,20 @@ jobs:
           validate-wrappers: false # 允许 CI 新生成的 wrapper
 
       # ---- Step 5: 安装 Android SDK 所需组件（含 NDK + CMake 用于 Native 编译）----
-      - name: Accept Android SDK Licenses & Install Components
-        run: |
-          yes | sdkmanager --sdk_root=${ANDROID_HOME} --licenses || true
-          sdkmanager --sdk_root=${ANDROID_HOME} \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "platform-tools" \
-            "cmdline-tools;latest" \
-            "ndk;25.2.9519653" \
-            "cmake;3.22.1" \
-            > /dev/null
-        shell: bash
+      # 使用 android-actions/setup-android@v3 自动配置 cmdline-tools 与 PATH
+      # 比 `sdkmanager` 命令更稳定，无需手动查找 sdkmanager 路径
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+          packages: |
+            platforms;android-34
+            build-tools;34.0.0
+            platform-tools
+            cmdline-tools;latest
+            ndk;25.2.9519653
+            cmake;3.22.1
 
       # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
       - name: Build Debug APK
