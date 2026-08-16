@@ -29,11 +29,14 @@
         android:theme="@style/Theme.AutoBOT">
 
         <!-- Shizuku Provider 配置 -->
+        <!-- 注意：ShizukuProvider.attachInfo() 内部强制校验 exported==true，
+             设为 false 会抛 IllegalStateException 导致 APP 启动即闪退 -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
-            android:exported="false"
+            android:exported="true"
             android:multiprocess="false"
+            android:enabled="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- Shizuku 服务配置 -->
