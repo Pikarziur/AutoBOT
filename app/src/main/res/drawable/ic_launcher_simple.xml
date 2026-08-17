@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 7.1 及以下设备（无 adaptive-icon 支持）的图标：
+  蓝色圆形背景 + 白色 BO 前景（居中缩放 0.75）
+-->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 背景圆 -->
+    <!-- 蓝色圆背景 -->
     <item>
         <shape android:shape="oval">
             <solid android:color="@color/primary" />
@@ -9,7 +13,7 @@
                 android:height="108dp" />
         </shape>
     </item>
-    <!-- 前景图标（机器人+闪电） -->
+    <!-- 前景 BO 字母 -->
     <item
         android:drawable="@drawable/ic_launcher_foreground"
         android:gravity="center" />

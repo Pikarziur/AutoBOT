@@ -1,58 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive Icon 前景层（108dp × 108dp viewport）
+  白色 "BO" 字母，放置在中央安全区（约 72dp 见方），
+  避免被各厂商 mask（圆 / 方 / squircle）裁到。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 机器人身体 -->
+    <!-- ==================== 字母 B ==================== -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M30,64 L30,88 Q30,94 36,94 L40,94 L40,78 L44,78 L44,94 L64,94 L64,78 L68,78 L68,94 L72,94 Q78,94 78,88 L78,64 Z" />
+        android:pathData="
+            M 26,26
+            L 52,26
+            C 60,26 66,31 66,39
+            C 66,46 61,51 52,52
+            C 62,52 66,58 66,65
+            C 66,75 59,82 50,82
+            L 26,82
+            Z
+            M 34,34
+            L 48,34
+            C 55,34 58,38 58,40
+            C 58,45 54,45 48,45
+            L 34,45
+            Z
+            M 34,59
+            L 48,59
+            C 56,59 58,63 58,67
+            C 58,74 54,74 48,74
+            L 34,74
+            Z" />
 
-    <!-- 机器人头部 -->
+    <!-- ==================== 字母 O ==================== -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M28,42 Q28,32 38,32 L70,32 Q80,32 80,42 L80,54 L80,56 L28,56 L28,54 Z" />
+        android:pathData="
+            M 54,54
+            C 54,37 62,26 71,26
+            C 81,26 88,37 88,54
+            C 88,71 81,82 71,82
+            C 62,82 54,71 54,54
+            Z
+            M 61,54
+            C 61,42 65,34 71,34
+            C 77,34 81,42 81,54
+            C 81,66 77,74 71,74
+            C 65,74 61,66 61,54
+            Z" />
 
-    <!-- 头部天线 -->
-    <path
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:pathData="M42,32 L38,22 M66,32 L70,22" />
-
-    <!-- 头部天线端点（VectorDrawable 不支持 <circle>，用 path 圆弧替代） -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M35,20 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M67,20 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 Z" />
-
-    <!-- 左眼 -->
-    <path
-        android:fillColor="@color/primary_dark"
-        android:pathData="M41,44 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 Z" />
-    <!-- 右眼 -->
-    <path
-        android:fillColor="@color/primary_dark"
-        android:pathData="M59,44 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 Z" />
-
-    <!-- 嘴巴/屏幕 -->
-    <path
-        android:fillColor="@color/primary_dark"
-        android:pathData="M42,51 L66,51 L66,55 L42,55 Z" />
-
-    <!-- 手臂 -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M20,64 L28,64 L28,82 L20,82 Q14,82 14,76 L14,70 Q14,64 20,64 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M88,64 L80,64 L80,82 L88,82 Q94,82 94,76 L94,70 Q94,64 88,64 Z" />
-
-    <!-- 闪电符号（代表自动化/快速） -->
-    <path
-        android:fillColor="#FFD700"
-        android:pathData="M52,60 L46,74 L52,74 L48,88 L62,70 L56,70 L60,60 Z" />
 </vector>
