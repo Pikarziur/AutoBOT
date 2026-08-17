@@ -1,22 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="purple_200">#FFBB86FC</color>
-    <color name="purple_500">#FF6200EE</color>
-    <color name="purple_700">#FF3700B3</color>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_700">#FF018786</color>
-    <color name="black">#FF000000</color>
+    <!-- ============ Material Design 白色主题色板 ============ -->
+    <!-- 背景与表面：纯白 -->
     <color name="white">#FFFFFFFF</color>
-
-    <!-- 自定义颜色 -->
-    <color name="primary">#2196F3</color>
-    <color name="primary_dark">#1976D2</color>
-    <color name="primary_light">#BBDEFB</color>
-    <color name="accent">#00BCD4</color>
-    <color name="background">#FAFAFA</color>
+    <color name="background">#FFFFFF</color>
     <color name="surface">#FFFFFF</color>
-    <color name="text_primary">#212121</color>
-    <color name="text_secondary">#757575</color>
-    <color name="success">#4CAF50</color>
-    <color name="error">#F44336</color>
-    <color name="warning">#FF9800</color>
+    <color name="surface_variant">#F5F5F5</color>
+
+    <!-- 文字：黑色主文字 + 灰色辅助文字 -->
+    <color name="black">#FF000000</color>
+    <color name="text_primary">#FF1A1A1A</color>
+    <color name="text_secondary">#FF757575</color>
+    <color name="text_hint">#FFBDBDBD</color>
+
+    <!-- 强调蓝：着重提醒、显著文字、按钮 -->
+    <color name="primary">#FF2979FF</color>
+    <color name="primary_dark">#FF1E88E5</color>
+    <color name="primary_light">#FF42A5F5</color>
+    <color name="accent">#FF2979FF</color>
+
+    <!-- 报错红：停止、关闭、错误信息 -->
+    <color name="error">#FFF44336</color>
+
+    <!-- 成功绿（运行中状态） -->
+    <color name="success">#FF4CAF50</color>
+    <!-- 警告橙（未启动状态） -->
+    <color name="warning">#FFFF9800</color>
+
+    <!-- 分割线/边框 -->
+    <color name="outline">#FFE0E0E0</color>
 </resources>

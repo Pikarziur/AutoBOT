@@ -6,6 +6,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.fragment.app.Fragment
@@ -94,10 +97,30 @@ class TasksFragment : Fragment() {
                 ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
             )
             setContent {
-                // 传入 SAF 启动回调：Compose UI 点击「SH 文件」按钮时触发
-                TasksScreen(
-                    onPickShFile = { launchShFilePicker() }
+                // 自定义白色主题 ColorScheme，与 XML 主题保持一致
+                val whiteTheme = lightColorScheme(
+                    primary = Color(0xFF2979FF),
+                    onPrimary = Color.White,
+                    primaryContainer = Color(0xFF42A5F5),
+                    onPrimaryContainer = Color.White,
+                    secondary = Color(0xFF2979FF),
+                    onSecondary = Color.White,
+                    background = Color.White,
+                    onBackground = Color(0xFF1A1A1A),
+                    surface = Color.White,
+                    onSurface = Color(0xFF1A1A1A),
+                    surfaceVariant = Color(0xFFF5F5F5),
+                    onSurfaceVariant = Color(0xFF757575),
+                    error = Color(0xFFF44336),
+                    onError = Color.White,
+                    outline = Color(0xFFE0E0E0)
                 )
+                MaterialTheme(colorScheme = whiteTheme) {
+                    // 传入 SAF 启动回调：Compose UI 点击「SH 文件」按钮时触发
+                    TasksScreen(
+                        onPickShFile = { launchShFilePicker() }
+                    )
+                }
             }
         }
     }

@@ -27,6 +27,8 @@ class AutoBOTApp : Application() {
         // 在 super.onCreate 之前启用 Vector 资源兼容 —— 修复某些系统版本下 Switch / CompoundButton
         // 加载 Drawable 资源时的间接 NPE（与 StaticLayout null 同源的兼容性坑）
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)
+        // 强制浅色模式，保证白色主题始终生效
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
 
         super.onCreate()
         instance = this

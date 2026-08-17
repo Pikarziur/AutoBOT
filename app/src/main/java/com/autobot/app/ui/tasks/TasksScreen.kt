@@ -738,13 +738,13 @@ private fun AppLauncherRow(
     launching: Boolean,
     onLaunchClick: () -> Unit
 ) {
-    // 启动按钮的颜色：蓝色主题（Material3 Blue500）
-    val launchButtonBlue = Color(0xFF2979FF)
+    // 启动按钮的颜色：蓝色主题（与全局 colorScheme.primary 一致）
+    val launchButtonBlue = MaterialTheme.colorScheme.primary
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1E1E1E))  // 比预览画面浅一点的灰，视觉分区
+            .background(MaterialTheme.colorScheme.surface)  // 白色底
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -758,7 +758,7 @@ private fun AppLauncherRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(enabled = installedApps.isNotEmpty(), onClick = onMenuToggle),
-                color = Color(0xFF2C2C2C),
+                color = MaterialTheme.colorScheme.surfaceVariant,  // 浅灰底
                 shape = RoundedCornerShape(8.dp),
                 tonalElevation = 0.dp
             ) {
@@ -778,7 +778,7 @@ private fun AppLauncherRow(
                     // App 名 + 包名 / 占位文案
                     Text(
                         text = selectedApp?.appName ?: "加载中…",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,  // 黑色文字
                         fontSize = 14.sp,
                         maxLines = 1,
                         modifier = Modifier.weight(1f)
@@ -788,7 +788,7 @@ private fun AppLauncherRow(
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
                         contentDescription = "选择应用",
-                        tint = Color.White.copy(alpha = 0.7f)
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant  // 灰色箭头
                     )
                 }
             }
@@ -881,9 +881,9 @@ private fun AppIconDrawable(
             if (icon != null) {
                 view.setImageDrawable(icon)
             } else {
-                // 无图标时显示一个灰色占位（MaterialTheme 无默认 drawable，用 setBackgroundColor 替代）
+                // 无图标时显示一个浅灰占位
                 view.setImageDrawable(null)
-                view.setBackgroundColor(android.graphics.Color.parseColor("#55FFFFFF"))
+                view.setBackgroundColor(0xFFE0E0E0.toInt())
             }
         }
     )
@@ -915,8 +915,8 @@ private fun ModeSelectionSection(
     onDeleteScriptTask: (String) -> Unit,
     onExecute: () -> Unit
 ) {
-    // 主题颜色
-    val accentBlue = Color(0xFF2979FF)
+    // 主题颜色：蓝色统一从 colorScheme.primary 取
+    val accentBlue = MaterialTheme.colorScheme.primary
     val sectionBg = MaterialTheme.colorScheme.surfaceVariant
     val enabledText = MaterialTheme.colorScheme.onSurface
     val disabledText = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
