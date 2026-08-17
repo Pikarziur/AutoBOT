@@ -37,27 +37,52 @@ jobs:
           cache-read-only: false
           validate-wrappers: false
 
-      # ---- Step 3: 若仓库缺少 gradle-wrapper.jar，用已安装的 gradle 命令生成 ----
-      # 此时 gradle 8.5 已在 PATH 中，直接调用即可
-      - name: Generate Gradle Wrapper (if jar missing)
+      # ---- Step 3: 验证 gradle-wrapper.jar 有效性，无效则重新生成 ----
+      # 检查：1) 文件是否存在  2) jar 是否包含 GradleWrapperMain 类
+      # 若任意条件不满足，用已安装的 gradle 命令重新生成
+      - name: Validate & Regenerate Gradle Wrapper
         run: |
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "✅ gradle-wrapper.jar already exists, skip generation"
-            ls -la gradle/wrapper/
-            exit 0
+          NEED_REGEN=false
+
+          # 检查 1: 文件是否存在
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "⚠️ gradle-wrapper.jar not found → need regeneration"
+            NEED_REGEN=true
+          else
+            # 检查 2: jar 是否有效（包含 GradleWrapperMain 类）
+            if jar tf "gradle/wrapper/gradle-wrapper.jar" 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
+              echo "✅ gradle-wrapper.jar exists and is valid"
+              ls -la gradle/wrapper/
+            else
+              echo "⚠️ gradle-wrapper.jar exists but is CORRUPTED (missing GradleWrapperMain) → need regeneration"
+              ls -la gradle/wrapper/
+              NEED_REGEN=true
+              # 删除损坏的 jar，避免后续判断混乱
+              rm -f "gradle/wrapper/gradle-wrapper.jar"
+            fi
           fi
 
-          echo "⚠️ gradle-wrapper.jar not found. Generating via gradle command..."
-          echo "gradle version: $(gradle --version)"
-          gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin --no-daemon
+          # 需要时重新生成
+          if [ "$NEED_REGEN" = true ]; then
+            echo "🔧 Generating fresh gradle-wrapper.jar via gradle command..."
+            echo "gradle version: $(gradle --version)"
+            gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin --no-daemon
 
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "✅ Generated gradle-wrapper.jar successfully:"
-            ls -la gradle/wrapper/
-          else
-            echo "❌ Failed to generate gradle-wrapper.jar"
-            ls -la gradle/ || true
-            exit 1
+            if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+              echo "✅ Generated gradle-wrapper.jar successfully:"
+              ls -la gradle/wrapper/
+              # 再次验证新生成的 jar
+              if jar tf "gradle/wrapper/gradle-wrapper.jar" 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
+                echo "✅ New jar validated successfully"
+              else
+                echo "❌ New jar still invalid, aborting"
+                exit 1
+              fi
+            else
+              echo "❌ Failed to generate gradle-wrapper.jar"
+              ls -la gradle/ || true
+              exit 1
+            fi
           fi
         shell: bash
 
@@ -91,18 +116,29 @@ jobs:
         shell: bash
 
       # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
-      # 优先用 ./gradlew，若 wrapper 仍有问题则 fallback 到 gradle 命令
+      # 优先用 ./gradlew；若 wrapper 失败或 jar 无效，直接 fallback 到 gradle 命令
       - name: Build Debug APK
         run: |
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            ./gradlew assembleDebug --stacktrace --no-daemon
-          else
-            echo "⚠️ wrapper jar missing, using gradle directly"
-            gradle assembleDebug --stacktrace --no-daemon
+          USE_WRAPPER=false
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ] && jar tf "gradle/wrapper/gradle-wrapper.jar" 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
+            USE_WRAPPER=true
           fi
+
+          if [ "$USE_WRAPPER" = true ]; then
+            echo "🔨 Building with ./gradlew..."
+            if ./gradlew assembleDebug --stacktrace --no-daemon; then
+              echo "✅ Build via gradlew succeeded"
+              exit 0
+            fi
+            echo "⚠️ gradlew build failed, falling back to direct gradle command"
+          fi
+
+          echo "🔨 Building with gradle directly..."
+          gradle assembleDebug --stacktrace --no-daemon
         shell: bash
 
       # ---- Step 7: 可选：编译 Release APK（无密钥时使用 debug 签名，方便测试） ----
+      # 同样增加 wrapper 有效性验证和 fallback 机制
       - name: Build Release APK (signed with debug keystore)
         run: |
           # 创建一个临时 debug keystore 用于 release
@@ -113,20 +149,32 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=AutoBOT Debug, OU=AutoBOT, O=AutoBOT, L=CN, ST=CN, C=CN" \
             || true
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            ./gradlew assembleRelease \
-              -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
-              -Pandroid.injected.signing.store.password=android \
-              -Pandroid.injected.signing.key.alias=androiddebugkey \
-              -Pandroid.injected.signing.key.password=android \
-              --stacktrace --no-daemon || true
-          else
-            gradle assembleRelease \
-              -Pandroid.injected.signing.store.file=$HOME/debug.keystore \
-              -Pandroid.injected.signing.store.password=android \
-              -Pandroid.injected.signing.key.alias=androiddebugkey \
-              -Pandroid.injected.signing.key.password=android \
-              --stacktrace --no-daemon || true
+
+          # 判断 wrapper 是否有效
+          USE_WRAPPER=false
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ] && jar tf "gradle/wrapper/gradle-wrapper.jar" 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
+            USE_WRAPPER=true
+          fi
+
+          SIGNING_ARGS="-Pandroid.injected.signing.store.file=$HOME/debug.keystore \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android"
+
+          BUILD_OK=false
+          if [ "$USE_WRAPPER" = true ]; then
+            echo "🔨 Building Release APK with ./gradlew..."
+            if ./gradlew assembleRelease $SIGNING_ARGS --stacktrace --no-daemon; then
+              BUILD_OK=true
+              echo "✅ Release build via gradlew succeeded"
+            else
+              echo "⚠️ gradlew release build failed, trying direct gradle..."
+            fi
+          fi
+
+          if [ "$BUILD_OK" = false ]; then
+            echo "🔨 Building Release APK with gradle directly..."
+            gradle assembleRelease $SIGNING_ARGS --stacktrace --no-daemon || true
           fi
         shell: bash
 
