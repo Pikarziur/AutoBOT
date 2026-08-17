@@ -115,7 +115,25 @@ jobs:
           sdkmanager --list_installed || sdkmanager --list | head -50
         shell: bash
 
-      # ---- Step 6: 编译 Debug APK（无需签名密钥） ----
+      # ---- Step 6: 从 GitHub Secrets 解码固定签名 keystore ----
+      # 保证每次 CI 构建的 APK 签名一致，Shizuku 授权不会因签名变化而失效
+      - name: Decode signing keystore
+        # 如果没有配置 Secrets，则跳过（使用默认 debug 签名兜底）
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "🔑 Decoding keystore from GitHub Secrets..."
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/autobot-release.jks
+          # 创建 keystore.properties 供 build.gradle.kts 读取
+          cat > keystore.properties <<EOF
+          storeFile=$HOME/autobot-release.jks
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+          echo "✅ keystore.properties created"
+        shell: bash
+
+      # ---- Step 7: 编译 Debug APK ----
       # 优先用 ./gradlew；若 wrapper 失败或 jar 无效，直接 fallback 到 gradle 命令
       - name: Build Debug APK
         run: |
@@ -137,34 +155,18 @@ jobs:
           gradle assembleDebug --stacktrace --no-daemon
         shell: bash
 
-      # ---- Step 7: 可选：编译 Release APK（无密钥时使用 debug 签名，方便测试） ----
-      # 同样增加 wrapper 有效性验证和 fallback 机制
-      - name: Build Release APK (signed with debug keystore)
+      # ---- Step 8: 编译 Release APK（使用固定签名 keystore） ----
+      - name: Build Release APK
         run: |
-          # 创建一个临时 debug keystore 用于 release
-          keytool -genkeypair -v \
-            -keystore $HOME/debug.keystore \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=AutoBOT Debug, OU=AutoBOT, O=AutoBOT, L=CN, ST=CN, C=CN" \
-            || true
-
-          # 判断 wrapper 是否有效
           USE_WRAPPER=false
           if [ -f "gradle/wrapper/gradle-wrapper.jar" ] && jar tf "gradle/wrapper/gradle-wrapper.jar" 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
             USE_WRAPPER=true
           fi
 
-          SIGNING_ARGS="-Pandroid.injected.signing.store.file=$HOME/debug.keystore \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=androiddebugkey \
-            -Pandroid.injected.signing.key.password=android"
-
           BUILD_OK=false
           if [ "$USE_WRAPPER" = true ]; then
             echo "🔨 Building Release APK with ./gradlew..."
-            if ./gradlew assembleRelease $SIGNING_ARGS --stacktrace --no-daemon; then
+            if ./gradlew assembleRelease --stacktrace --no-daemon; then
               BUILD_OK=true
               echo "✅ Release build via gradlew succeeded"
             else
@@ -174,11 +176,11 @@ jobs:
 
           if [ "$BUILD_OK" = false ]; then
             echo "🔨 Building Release APK with gradle directly..."
-            gradle assembleRelease $SIGNING_ARGS --stacktrace --no-daemon || true
+            gradle assembleRelease --stacktrace --no-daemon || true
           fi
         shell: bash
 
-      # ---- Step 8: 上传 Debug APK Artifact ----
+      # ---- Step 9: 上传 Debug APK Artifact ----
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -187,7 +189,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---- Step 9: 上传 Release APK Artifact ----
+      # ---- Step 10: 上传 Release APK Artifact ----
       - name: Upload Release APK (if built)
         uses: actions/upload-artifact@v4
         with:
@@ -196,7 +198,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # ---- Step 10: 上传 mapping & logs（排查用） ----
+      # ---- Step 11: 上传 mapping & logs（排查用） ----
       - name: Upload Build Outputs (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
