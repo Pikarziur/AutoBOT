@@ -2,6 +2,7 @@ package com.autobot.app
 
 import android.app.Application
 import android.util.Log
+import androidx.appcompat.app.AppCompatDelegate
 import com.autobot.app.manager.ScriptTaskManager
 import com.autobot.app.manager.ShizukuManager
 import rikka.shizuku.Shizuku
@@ -23,6 +24,10 @@ class AutoBOTApp : Application() {
     }
 
     override fun onCreate() {
+        // 在 super.onCreate 之前启用 Vector 资源兼容 —— 修复某些系统版本下 Switch / CompoundButton
+        // 加载 Drawable 资源时的间接 NPE（与 StaticLayout null 同源的兼容性坑）
+        AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)
+
         super.onCreate()
         instance = this
 

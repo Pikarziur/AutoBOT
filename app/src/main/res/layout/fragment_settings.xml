@@ -64,7 +64,7 @@
                             android:textColor="@color/text_primary" />
                     </LinearLayout>
 
-                    <com.google.android.material.materialswitch.MaterialSwitch
+                    <com.autobot.app.widget.SafeMaterialSwitch
                         android:id="@+id/switchAutoConnect"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
