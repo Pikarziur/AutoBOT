@@ -85,7 +85,7 @@ object ShizukuManager {
             ShizukuDiagnosis.OK -> "Shizuku 已授权"
             ShizukuDiagnosis.NOT_INSTALLED -> context.getString(R.string.shizuku_not_installed)
             ShizukuDiagnosis.NOT_CONNECTED -> "Shizuku 服务未启动：请打开 Shizuku App 并启动服务（通过 ADB / Root）"
-            ShizukuDiagnosis.NOT_GRANTED -> "Shizuku 已连接但未授权：请在首页点击 Shizuku 卡片进行授权"
+            ShizukuDiagnosis.NOT_GRANTED -> "Shizuku 已连接但未授权：请打开 Shizuku App 并在「已授权的应用」中授权本应用"
             ShizukuDiagnosis.UNKNOWN_ERROR -> "Shizuku 状态异常：请重启 Shizuku 服务后重试"
         }
     }

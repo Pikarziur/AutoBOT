@@ -444,7 +444,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val r = false to "未选中有效应用"
             _executeMessage.value = r.second; return r
         }
-        // Shizuku 校验：先刷新一次（解决"首页授权后切回仍显示未授权"的缓存问题）
+        // Shizuku 校验：先刷新一次状态（解决授权后仍显示未授权的缓存问题）
         //  refreshShizukuStatus 内部会把诊断结果写入日志区，方便用户肉眼排查
         val granted = refreshShizukuStatus()
         if (!granted) {

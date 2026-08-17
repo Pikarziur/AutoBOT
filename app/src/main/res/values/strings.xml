@@ -1,45 +1,8 @@
 <resources>
     <string name="app_name">AutoBOT</string>
 
-    <!-- 底部导航 -->
-    <string name="nav_home">首页</string>
-    <string name="nav_tasks">后台任务</string>
-    <string name="nav_settings">设置</string>
-
-    <!-- 首页 -->
-    <string name="home_title">首页</string>
-    <string name="screen_resolution">屏幕分辨率</string>
-    <string name="app_version">APP版本</string>
-    <string name="shizuku_auth">Shizuku授权</string>
-    <string name="shizuku_auth_summary">点击跳转Shizuku进行授权</string>
+    <!-- Shizuku -->
     <string name="shizuku_authorized">已授权</string>
     <string name="shizuku_unauthorized">未授权</string>
     <string name="shizuku_not_installed">Shizuku未安装</string>
-    <string name="shell_execution">Shell执行测试</string>
-    <string name="execute_command">执行命令</string>
-    <string name="command_hint">输入shell命令...</string>
-    <string name="command_result">执行结果</string>
-
-    <!-- 后台任务 -->
-    <string name="tasks_title">后台任务</string>
-    <string name="no_running_tasks">暂无运行中的任务</string>
-    <string name="task_id">任务ID</string>
-    <string name="task_status">状态</string>
-    <string name="task_start_time">开始时间</string>
-    <string name="task_stop">停止</string>
-    <string name="status_pending">等待中</string>
-    <string name="status_running">运行中</string>
-    <string name="status_completed">已完成</string>
-    <string name="status_stopped">已停止</string>
-    <string name="status_error">出错</string>
-
-    <!-- 设置 -->
-    <string name="settings_title">设置</string>
-    <string name="settings_general">通用设置</string>
-    <string name="settings_shizuku">Shizuku设置</string>
-    <string name="settings_about">关于</string>
-    <string name="settings_auto_start_shizuku">启动时自动连接Shizuku</string>
-    <string name="settings_adb_wireless">无线ADB设置</string>
-    <string name="settings_adb_port">ADB端口</string>
-    <string name="settings_adb_ip">ADB IP地址</string>
 </resources>
