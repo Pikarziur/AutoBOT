@@ -9,7 +9,6 @@ import androidx.lifecycle.viewModelScope
 import com.autobot.app.manager.ScriptTaskManager
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.TaskManager
-import com.autobot.app.model.TaskMode
 import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
 import com.autobot.app.nativelib.NativeCapturer
@@ -43,6 +42,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     companion object {
         private const val TAG = "MonitorViewModel"
+        private const val LOG_MAX_LINES = 500
     }
 
     private val compositionService = CompositionService()
@@ -120,10 +120,6 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     private val logLock = Any()
     private val logSdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-
-    companion object {
-        private const val LOG_MAX_LINES = 500
-    }
 
     /**
      * TaskManager 事件监听器：将任务生命周期和输出转为 UI 日志

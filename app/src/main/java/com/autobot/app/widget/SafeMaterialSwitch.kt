@@ -13,10 +13,9 @@ import com.google.android.material.materialswitch.MaterialSwitch
  *   传入 android.text.StaticLayout 构造器时触发 NPE。
  *   且 onMeasure 调用时机早于 Fragment.onViewCreated，代码层设置为时已晚。
  *
- * 修复策略：
- *   1. 所有构造函数中立即将 textOn/textOff/text 置为空字符串，showText 设为 false
- *   2. 重写 onMeasure，整个流程套 try-catch，捕获异常时 fallback 到 super.onMeasure
- *   3. 额外覆写 setTextOn/setTextOff/setShowText/setText 防御 null 传入
+ * 修复策略（最小化，避免 override 签名不匹配导致编译失败）：
+ *   1. init 块立即将 textOn/textOff/text 置空、showText 设 false
+ *   2. onMeasure 套 try-catch，NPE 时重置后重试，再失败用最小安全尺寸兜底
  */
 class SafeMaterialSwitch @JvmOverloads constructor(
     context: Context,
@@ -62,24 +61,5 @@ class SafeMaterialSwitch @JvmOverloads constructor(
                 )
             }
         }
-    }
-
-    // ---- 对外 setter 统一防御 null ----
-
-    override fun setTextOn(textOn: CharSequence?) {
-        super.setTextOn(textOn ?: "")
-    }
-
-    override fun setTextOff(textOff: CharSequence?) {
-        super.setTextOff(textOff ?: "")
-    }
-
-    override fun setShowText(showText: Boolean) {
-        // 任何情况都不显示文字 —— 避免 makeLayout 走绘制分支
-        super.setShowText(false)
-    }
-
-    override fun setText(text: CharSequence?, type: BufferType?) {
-        super.setText(text ?: "", type)
     }
 }
