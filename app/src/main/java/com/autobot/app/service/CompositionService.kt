@@ -73,13 +73,13 @@ class CompositionService {
      *
      * @param newWidth  新宽度
      * @param newHeight 新高度
-     * @return 成功返回新 Surface；失败返回 null（此时旧 VD 也已被释放以避免状态不一致）
+     * @return 成功返回 Pair(newSurface, "")；失败返回 Pair(null, 错误文案)（此时旧 VD 也已被释放以避免状态不一致）
      */
-    fun restartVirtualDisplay(newWidth: Int, newHeight: Int): Surface? {
+    fun restartVirtualDisplay(newWidth: Int, newHeight: Int): Pair<Surface?, String> {
         // 参数与当前一致 → 无需重建，直接返回现有 surface
         if (newWidth == width && newHeight == height && capturer != null) {
             Log.i(TAG, "restartVirtualDisplay skipped: size unchanged (${newWidth}x${newHeight})")
-            return displaySurface
+            return displaySurface to ""
         }
 
         Log.i(TAG, "Restarting VirtualDisplay: ${width}x${height} -> ${newWidth}x${newHeight}")
@@ -91,10 +91,10 @@ class CompositionService {
         stopVirtualDisplay()
 
         // 3. 用新尺寸启动 VD（走与 startVirtualDisplay 相同的 Shizuku 路径）
-        val newSurface = startVirtualDisplay(newWidth, newHeight)
+        val (newSurface, err) = startVirtualDisplay(newWidth, newHeight)
         if (newSurface == null) {
-            Log.e(TAG, "restartVirtualDisplay: startVirtualDisplay failed at ${newWidth}x${newHeight}")
-            return null
+            Log.e(TAG, "restartVirtualDisplay: startVirtualDisplay failed at ${newWidth}x${newHeight}, err=$err")
+            return null to err
         }
 
         // 4. 如果之前有绑定预览，自动重新绑定到新的 NativeCapturer
@@ -103,7 +103,7 @@ class CompositionService {
             Log.i(TAG, "restartVirtualDisplay: re-attached previous preview surface")
         }
 
-        return newSurface
+        return newSurface to ""
     }
 
     /**
@@ -125,19 +125,25 @@ class CompositionService {
      * 3. DisplayServiceShizuku.createVirtualDisplay(name, w, h, dpi, surface)
      *    通过 ShizukuBinderWrapper 调用 IDisplayManager.createVirtualDisplay
      *
-     * @return 虚拟显示器输出 Surface；失败返回 null
+     * @return 成功返回 Pair(surface, "")；失败返回 Pair(null, 详细错误文案)
      */
     fun startVirtualDisplay(width: Int = DEFAULT_WIDTH,
-                            height: Int = DEFAULT_HEIGHT): Surface? {
+                            height: Int = DEFAULT_HEIGHT): Pair<Surface?, String> {
         if (capturer != null) {
             Log.w(TAG, "VirtualDisplay already running, stop first")
-            return displaySurface
+            return displaySurface to ""
         }
 
-        // 1. Shizuku 权限校验：未授权直接拒绝，避免后续反射调用 throw SecurityException
+        // 1. Shizuku 权限校验：先连接检测，再授权检测（拆分原因，精准报错）
+        if (!ShizukuManager.isShizukuConnected()) {
+            val msg = "虚拟显示器启动失败：Shizuku 服务未连接。请打开 Shizuku App 并通过 ADB/Root 启动服务。"
+            Log.e(TAG, "Shizuku not connected: $msg")
+            return null to msg
+        }
         if (!ShizukuManager.isShizukuGranted()) {
-            Log.e(TAG, "Shizuku not granted, cannot create VirtualDisplay")
-            return null
+            val msg = "虚拟显示器启动失败：Shizuku 已连接但本 App 未获得权限。请回到首页，点击 Shizuku 卡片进行授权（会弹出授权确认框）。"
+            Log.e(TAG, "Shizuku not granted: $msg")
+            return null to msg
         }
 
         this.width = width
@@ -148,8 +154,9 @@ class CompositionService {
             val cap = NativeCapturer()
             val surface = cap.setupNativeCapturer(width, height)
             if (surface == null) {
-                Log.e(TAG, "setupNativeCapturer returned null surface")
-                return null
+                val msg = "虚拟显示器启动失败：Native 图像采集器初始化失败（setupNativeCapturer 返回 null）。请确认 minSdkVersion>=26 且 so 库已加载。"
+                Log.e(TAG, msg)
+                return null to msg
             }
             capturer = cap
             displaySurface = surface
@@ -160,19 +167,21 @@ class CompositionService {
                 VIRTUAL_DISPLAY_NAME, width, height, DEFAULT_DPI, surface
             )
             if (handle == null) {
-                Log.e(TAG, "DisplayServiceShizuku.createVirtualDisplay returned null")
+                val msg = "虚拟显示器启动失败：系统 DisplayManager.createVirtualDisplay 返回 null。可能原因：①ROM 定制移除了该接口 ②MANAGE_DISPLAYS 权限未生效（Shizuku shell uid 被降权） ③可用虚拟显示器槽位已满。详见 logcat 中 DisplayServiceShizuku 标签。"
+                Log.e(TAG, msg)
                 // 回滚已分配的 Native 资源
                 cap.releaseNativeCapturer()
                 capturer = null
                 displaySurface = null
-                return null
+                return null to msg
             }
             virtualDisplayHandle = handle
 
             Log.i(TAG, "VirtualDisplay started: ${width}x${height} (via Shizuku)")
-            surface
+            surface to ""
         } catch (e: Exception) {
-            Log.e(TAG, "startVirtualDisplay failed", e)
+            val msg = "虚拟显示器启动失败：异常 ${e.javaClass.simpleName}: ${e.message}"
+            Log.e(TAG, msg, e)
             // 异常回滚：防止资源泄漏
             try {
                 virtualDisplayHandle?.release()
@@ -181,7 +190,7 @@ class CompositionService {
             virtualDisplayHandle = null
             capturer = null
             displaySurface = null
-            null
+            null to msg
         }
     }
 

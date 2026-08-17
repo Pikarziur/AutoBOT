@@ -194,6 +194,25 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
+     * 刷新 Shizuku 授权状态（从首页授权切回 TasksFragment 时必须调用）
+     * 同时打印详细诊断日志到日志区，方便排查"已授权但仍失败"的情况
+     *
+     * @return 刷新后是否已授权
+     */
+    fun refreshShizukuStatus(): Boolean {
+        val ctx = getApplication<Application>().applicationContext
+        val diag = ShizukuManager.diagnoseShizuku(ctx)
+        val text = ShizukuManager.getDiagnosisText(ctx, diag)
+        val granted = diag == ShizukuManager.ShizukuDiagnosis.OK
+        _shizukuGranted.value = granted
+
+        // 同步写入日志区（用户肉眼可见，避免"为什么明明授权了还报错"的困惑）
+        appendLog("[${stamp()}] Shizuku 诊断：$text (code=$diag)")
+        Log.i(TAG, "refreshShizukuStatus: diag=$diag, granted=$granted")
+        return granted
+    }
+
+    /**
      * 刷新 SH 脚本任务列表（从 ScriptTaskManager 拉取最新数据）
      */
     fun refreshScriptTasks() {
@@ -355,14 +374,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val surface = compositionService.startVirtualDisplay(width, height)
+            val (surface, errMsg) = compositionService.startVirtualDisplay(width, height)
             if (surface != null) {
                 _displaySize.value = width to height
                 _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
                 Log.i(TAG, "VirtualDisplay launched: ${width}x${height} (landscape=${_isLandscape.value})")
             } else {
-                Log.e(TAG, "VirtualDisplay launch failed (surface null)")
+                val msg = if (errMsg.isNotBlank()) errMsg else "VirtualDisplay launch failed (surface null)"
+                Log.e(TAG, msg)
+                appendLog("[${stamp()}] ✗ $msg")
+                _executeMessage.value = msg
             }
         }
     }
@@ -382,7 +404,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         val newH = curW
 
         viewModelScope.launch(Dispatchers.IO) {
-            val newSurface = compositionService.restartVirtualDisplay(newW, newH)
+            val (newSurface, errMsg) = compositionService.restartVirtualDisplay(newW, newH)
             if (newSurface != null) {
                 _displaySize.value = newW to newH
                 _isLandscape.value = compositionService.isLandscape
@@ -390,7 +412,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 // 重启失败：VD 可能处于未启动状态，同步 UI 状态
                 _isRunning.value = false
-                Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed")
+                val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器切换方向失败，请重试"
+                Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed: $msg")
+                appendLog("[${stamp()}] ✗ $msg")
+                _executeMessage.value = msg
             }
         }
     }
@@ -419,10 +444,13 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val r = false to "未选中有效应用"
             _executeMessage.value = r.second; return r
         }
-        // Shizuku 校验：启动 VD 与启动 App 都依赖 Shizuku
-        _shizukuGranted.value = ShizukuManager.isShizukuGranted()
-        if (!_shizukuGranted.value) {
-            val r = false to "Shizuku 未授权，无法启动虚拟显示器与 App"
+        // Shizuku 校验：先刷新一次（解决"首页授权后切回仍显示未授权"的缓存问题）
+        //  refreshShizukuStatus 内部会把诊断结果写入日志区，方便用户肉眼排查
+        val granted = refreshShizukuStatus()
+        if (!granted) {
+            val diag = ShizukuManager.diagnoseShizuku(context)
+            val detail = ShizukuManager.getDiagnosisText(context, diag)
+            val r = false to "Shizuku 未就绪，无法启动虚拟显示器与 App：$detail"
             _executeMessage.value = r.second; return r
         }
 
@@ -447,14 +475,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         // 3. 若 VD 尚未启动 → 用目标分辨率启动
         if (!_isRunning.value) {
-            val surface = compositionService.startVirtualDisplay(targetW, targetH)
+            val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
             if (surface != null) {
                 _displaySize.value = targetW to targetH
                 _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
                 Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
             } else {
-                val r = false to "虚拟显示器启动失败，请确认 Shizuku 已授权"
+                val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器启动失败，请确认 Shizuku 已授权"
+                appendLog("[${stamp()}] ✗ $msg")
+                val r = false to msg
                 _executeMessage.value = r.second; return r
             }
         } else {
@@ -462,13 +492,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val (curW, curH) = _displaySize.value
             if (curW != targetW || curH != targetH) {
                 Log.i(TAG, "VD size mismatch: current ${curW}x${curH}, target ${targetW}x${targetH}, restarting…")
-                val newSurface = compositionService.restartVirtualDisplay(targetW, targetH)
+                val (newSurface, errMsg) = compositionService.restartVirtualDisplay(targetW, targetH)
                 if (newSurface != null) {
                     _displaySize.value = targetW to targetH
                     _isLandscape.value = compositionService.isLandscape
                 } else {
                     _isRunning.value = false
-                    val r = false to "虚拟显示器切换方向失败，请重试"
+                    val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器切换方向失败，请重试"
+                    appendLog("[${stamp()}] ✗ $msg")
+                    val r = false to msg
                     _executeMessage.value = r.second; return r
                 }
             } else {
@@ -497,10 +529,12 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         return if (ok) {
             val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
             _executeMessage.value = r.second
+            appendLog("[${stamp()}] ✓ ${r.second}, pkg=$packageName, display=$dId")
             r
         } else {
             val r = false to "App 启动命令失败，请确认目标应用已安装"
             _executeMessage.value = r.second
+            appendLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
             r
         }
     }

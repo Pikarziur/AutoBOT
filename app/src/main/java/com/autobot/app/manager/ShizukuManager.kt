@@ -47,6 +47,50 @@ object ShizukuManager {
     }
 
     /**
+     * Shizuku 详细诊断结果（UI 可以展示更精确的提示）
+     */
+    enum class ShizukuDiagnosis {
+        OK,                 // 一切正常：已安装 + 已连接 + 已授权
+        NOT_INSTALLED,      // Shizuku App 未安装
+        NOT_CONNECTED,      // Shizuku 服务未启动 / Binder 不可达（用户没在 Shizuku App 里启动服务）
+        NOT_GRANTED,        // Shizuku 服务已连接但本 App 未被授权（用户拒绝了权限弹窗）
+        UNKNOWN_ERROR       // 调用过程中出现异常（详见日志）
+    }
+
+    /**
+     * 详细诊断 Shizuku 状态（不只是 Boolean，调用方可根据不同情况给出精准文案）
+     */
+    fun diagnoseShizuku(context: Context): ShizukuDiagnosis {
+        return try {
+            if (!isShizukuInstalled(context)) {
+                ShizukuDiagnosis.NOT_INSTALLED
+            } else if (!isShizukuConnected()) {
+                ShizukuDiagnosis.NOT_CONNECTED
+            } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                ShizukuDiagnosis.NOT_GRANTED
+            } else {
+                ShizukuDiagnosis.OK
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("ShizukuManager", "diagnoseShizuku exception: ${e.message}")
+            ShizukuDiagnosis.UNKNOWN_ERROR
+        }
+    }
+
+    /**
+     * 获取诊断文本（用于 Toast / 日志）
+     */
+    fun getDiagnosisText(context: Context, diag: ShizukuDiagnosis): String {
+        return when (diag) {
+            ShizukuDiagnosis.OK -> "Shizuku 已授权"
+            ShizukuDiagnosis.NOT_INSTALLED -> context.getString(R.string.shizuku_not_installed)
+            ShizukuDiagnosis.NOT_CONNECTED -> "Shizuku 服务未启动：请打开 Shizuku App 并启动服务（通过 ADB / Root）"
+            ShizukuDiagnosis.NOT_GRANTED -> "Shizuku 已连接但未授权：请在首页点击 Shizuku 卡片进行授权"
+            ShizukuDiagnosis.UNKNOWN_ERROR -> "Shizuku 状态异常：请重启 Shizuku 服务后重试"
+        }
+    }
+
+    /**
      * 检查是否已获得 Shizuku 权限
      * 注意：Shizuku v13+ 已移除 checkCallingPermission()，统一使用 checkSelfPermission()
      */

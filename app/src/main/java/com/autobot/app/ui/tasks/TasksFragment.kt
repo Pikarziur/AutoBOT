@@ -125,6 +125,10 @@ class TasksFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
+        // 每次切回后台任务页都刷新一次 Shizuku 状态：
+        // 解决"首页授权后切回来仍然报错未授权"的状态缓存问题
+        // （refreshShizukuStatus 内部会把诊断信息写入日志区，方便排查）
+        vm.refreshShizukuStatus()
         ensureForegroundService()
     }
 
