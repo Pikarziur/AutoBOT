@@ -54,6 +54,15 @@ class HomeFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // 修复 MaterialSwitch NPE：即使 XML 已设置 textOn/textOff/showText，
+        // 某些设备/版本下 SwitchCompat.makeLayout 仍可能因 null 崩，代码层再强制设一次
+        binding.switchShizuku.apply {
+            textOn = ""
+            textOff = ""
+            isShowText = false
+            text = ""
+        }
+
         // 注册 Shizuku 权限回调
         // 注意：Shizuku 未安装/未启动时 addRequestPermissionResultListener 会抛异常
         //       必须套 try-catch；ShizukuManager.isShizukuConnected 内部也会 pingBinder 抛异常捕获

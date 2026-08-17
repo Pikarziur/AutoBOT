@@ -37,6 +37,15 @@ class SettingsFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // 修复 MaterialSwitch NPE：即使 XML 已设置 textOn/textOff/showText，
+        // 某些设备/版本下 SwitchCompat.makeLayout 仍可能因 null 崩，代码层再强制设一次
+        binding.switchAutoConnect.apply {
+            textOn = ""
+            textOff = ""
+            isShowText = false
+            text = ""
+        }
+
         loadSavedSettings()
         initAboutSection()
         initSaveButton()
