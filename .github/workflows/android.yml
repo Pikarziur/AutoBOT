@@ -117,18 +117,26 @@ jobs:
 
       # ---- Step 6: 从 GitHub Secrets 解码固定签名 keystore ----
       # 保证每次 CI 构建的 APK 签名一致，Shizuku 授权不会因签名变化而失效
+      # secrets 上下文不能直接用在 if 条件里，改用 env + 脚本内部判断
       - name: Decode signing keystore
-        # 如果没有配置 Secrets，则跳过（使用默认 debug 签名兜底）
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "⚠️ No keystore secret configured, skipping (will use default debug signing)"
+            exit 0
+          fi
           echo "🔑 Decoding keystore from GitHub Secrets..."
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/autobot-release.jks
+          echo "$KEYSTORE_BASE64" | base64 -d > $HOME/autobot-release.jks
           # 创建 keystore.properties 供 build.gradle.kts 读取
           cat > keystore.properties <<EOF
           storeFile=$HOME/autobot-release.jks
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
           EOF
           echo "✅ keystore.properties created"
         shell: bash
