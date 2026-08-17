@@ -17,8 +17,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -157,14 +160,19 @@ fun TasksScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         if (!isFullscreen) {
-            // ============ 小窗模式 ============
-            // 预览区 weight=3（包含预览画面 + App 启动条）
+            // ============ 小窗模式（可滚动长页面）============
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(3f)
-                    .background(Color.Black)
+                    .verticalScroll(rememberScrollState())
             ) {
+                // 预览区（包含预览画面 + App 启动条）
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(280.dp)
+                        .background(Color.Black)
+                ) {
                 // 预览画面：占满剩余可用高度
                 Box(
                     modifier = Modifier
@@ -235,11 +243,9 @@ fun TasksScreen(
             }
 
             // ---------- 模式选择 + 任务列表区 ----------
-            // 占剩余空间的一部分（与下方 Tab 区按 weight 分配）
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(4f)
                     .background(MaterialTheme.colorScheme.surface)
             ) {
                 ModeSelectionSection(
@@ -256,16 +262,17 @@ fun TasksScreen(
                 )
             }
 
-            // 区域 weight=3：任务日志区（实时打印运行中的 stdout/stderr / 开始/停止事件）
+            // 任务日志区（实时打印运行中的 stdout/stderr / 开始/停止事件）
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(3f)
+                    .height(220.dp)
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(8.dp)
             ) {
                 TaskLogContent(vm = vm)
             }
+            } // close scroll Column
         } else {
             // ============ 全屏模式 ============
             // 全屏区域占据整个 Column（Column 本身即 fillMaxSize）
@@ -923,7 +930,7 @@ private fun ModeSelectionSection(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .background(sectionBg)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -972,7 +979,7 @@ private fun ModeSelectionSection(
             )
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // ========== 底部：执行任务按钮 ==========
         Button(
