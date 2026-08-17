@@ -87,31 +87,21 @@ object DisplayServiceShizuku {
                     return null
                 }
 
-            // 4. 反射拿 createVirtualDisplay 方法
-            //    API 33+: createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String, IBinder)
-            //    （不同版本参数有差异，这里以 API 33+ 的 4 参数签名为准，向下兼容在 catch 中处理）
+            // 4. 反射拿 createVirtualDisplay 方法（兼容各 Android 版本签名变化）
+            //    API 33+ (Android 13+): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String, IBinder)
+            //    API 28-32 (Android 9-12): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String)
+            //    其他 ROM 定制变体：兜底遍历所有 createVirtualDisplay 重载
             val iDisplayManagerClass = Class.forName("android.hardware.display.IDisplayManager")
-            val virtualDisplayConfigClass = Class.forName("android.hardware.display.VirtualDisplayConfig")
-            val callbackClass = Class.forName("android.hardware.display.IVirtualDisplayCallback")
-
-            val method = try {
-                // API 33+ 4 参数签名（包含 projectedDisplayUID）
-                iDisplayManagerClass.getMethod(
-                    "createVirtualDisplay",
-                    virtualDisplayConfigClass,
-                    callbackClass,
-                    String::class.java,
-                    IBinder::class.java
-                )
-            } catch (e: NoSuchMethodException) {
-                // 退回到 3 参数签名（早期 API 33）
-                iDisplayManagerClass.getMethod(
-                    "createVirtualDisplay",
-                    virtualDisplayConfigClass,
-                    callbackClass,
-                    String::class.java
-                )
+            val method = findCreateVirtualDisplayMethod(iDisplayManagerClass)
+            if (method == null) {
+                Log.e(TAG, "No createVirtualDisplay method found. Available methods on IDisplayManager:")
+                // 诊断输出：打印所有方法，方便排查 ROM 改了什么签名
+                iDisplayManagerClass.declaredMethods.forEach { m ->
+                    Log.w(TAG, "  ${m.name}(${m.parameterTypes.joinToString { it.simpleName }})")
+                }
+                return null
             }
+            Log.i(TAG, "createVirtualDisplay signature: ${method.parameterTypes.joinToString { it.simpleName }}")
 
             val handle = DisplayManagerHandle(iDisplayManager, method)
             cachedHandle = handle
@@ -121,6 +111,58 @@ object DisplayServiceShizuku {
             Log.e(TAG, "getDisplayManagerHandle failed", e)
             null
         }
+    }
+
+    /**
+     * 查找 IDisplayManager.createVirtualDisplay 方法
+     *
+     * 兼容各 Android 版本的签名变化：
+     *   - API 33+ (Android 13+): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String, IBinder)
+     *   - API 28-32 (Android 9-12): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String)
+     *   - 其他 ROM 定制变体：兜底取任意一个名为 createVirtualDisplay 的方法
+     *
+     * 关键修复：原代码第二个 getMethod 抛 NoSuchMethodException 未被捕获，导致整个流程失败。
+     *          现在所有签名尝试均用 try-catch 包裹，最终兜底遍历所有方法。
+     */
+    private fun findCreateVirtualDisplayMethod(cls: Class<*>): java.lang.reflect.Method? {
+        val virtualDisplayConfigClass = runCatching {
+            Class.forName("android.hardware.display.VirtualDisplayConfig")
+        }.getOrNull() ?: return null
+        val callbackClass = runCatching {
+            Class.forName("android.hardware.display.IVirtualDisplayCallback")
+        }.getOrNull() ?: return null
+
+        // 1. 尝试 4 参数签名（API 33+ 带 nativeToken / IBinder）
+        try {
+            return cls.getMethod(
+                "createVirtualDisplay",
+                virtualDisplayConfigClass,
+                callbackClass,
+                String::class.java,
+                IBinder::class.java
+            )
+        } catch (_: NoSuchMethodException) { /* 继续尝试下一个签名 */ }
+
+        // 2. 尝试 3 参数签名（API 28-32）
+        try {
+            return cls.getMethod(
+                "createVirtualDisplay",
+                virtualDisplayConfigClass,
+                callbackClass,
+                String::class.java
+            )
+        } catch (_: NoSuchMethodException) { /* 继续兜底 */ }
+
+        // 3. 兜底：遍历所有声明的方法（含继承接口的），挑任意一个名为 createVirtualDisplay 的重载
+        //    适配 ROM 定制或新版 Android 改了参数类型/顺序的情况
+        Log.w(TAG, "Known signatures not matched, scanning all createVirtualDisplay overloads...")
+        val allMethods = cls.declaredMethods.toList() +
+            cls.interfaces.flatMap { it.declaredMethods.toList() }
+        val candidate = allMethods.firstOrNull { it.name == "createVirtualDisplay" }
+        if (candidate != null) {
+            Log.w(TAG, "Fallback method found: createVirtualDisplay(${candidate.parameterTypes.joinToString { it.simpleName }})")
+        }
+        return candidate
     }
 
     /**
@@ -201,24 +243,33 @@ object DisplayServiceShizuku {
             val config = buildVirtualDisplayConfig(name, width, height, density, surface)
             val callback = createCallbackProxy()
 
-            // 优先 4 参数签名（API 33+ 带 projectedDisplayUID）
-            val virtualDisplay = try {
-                handle.createVirtualDisplayMethod.invoke(
-                    handle.iDisplayManager,
-                    config,
-                    callback,
-                    "com.autobot.app",  // packageName
-                    Binder()            // projectedDisplayUID / windowContextToken 占位
-                )
-            } catch (e: IllegalArgumentException) {
-                // 退回到 3 参数签名
-                handle.createVirtualDisplayMethod.invoke(
-                    handle.iDisplayManager,
-                    config,
-                    callback,
-                    "com.autobot.app"
-                )
+            // 按方法参数类型动态构造参数列表（兼容不同 Android 版本的签名变化）
+            //   config       → VirtualDisplayConfig 实例
+            //   callback     → IVirtualDisplayCallback 动态代理
+            //   "com.autobot.app" → packageName
+            //   Binder()     → IBinder / nativeToken 占位
+            //   0 / 0L       → int / long 占位
+            val paramTypes = handle.createVirtualDisplayMethod.parameterTypes
+            val args = arrayOfNulls<Any>(paramTypes.size)
+            for (i in paramTypes.indices) {
+                val type = paramTypes[i]
+                args[i] = when {
+                    type.name == "android.hardware.display.VirtualDisplayConfig" -> config
+                    type.name == "android.hardware.display.IVirtualDisplayCallback" -> callback
+                    type == String::class.java -> "com.autobot.app"
+                    type == IBinder::class.java -> Binder()
+                    type == Surface::class.java -> surface
+                    type == Int::class.javaPrimitiveType -> 0
+                    type == Long::class.javaPrimitiveType -> 0L
+                    type == Boolean::class.javaPrimitiveType -> false
+                    else -> {
+                        Log.w(TAG, "Unknown parameter type at index $i: ${type.name}, using null")
+                        null
+                    }
+                }
             }
+
+            val virtualDisplay = handle.createVirtualDisplayMethod.invoke(handle.iDisplayManager, *args)
 
             if (virtualDisplay == null) {
                 Log.e(TAG, "createVirtualDisplay returned null (permission denied or invalid args)")
