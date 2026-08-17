@@ -53,6 +53,9 @@ private fun PreviewContentImpl(
     // 记录最近一次传递给 ViewModel 的 Surface，避免重复传递
     var lastSentSurface by remember { mutableStateOf<android.view.Surface?>(null) }
 
+    // 记录上次应用到 SurfaceView 的固定尺寸（避免重复 setFixedSize）
+    var lastFixedSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
     val (bufferWidth, bufferHeight) = displaySize
 
     Box(
@@ -74,6 +77,7 @@ private fun PreviewContentImpl(
                         override fun surfaceCreated(holder: SurfaceHolder) {
                             // 必须先 setFixedSize 才能正确显示
                             holder.setFixedSize(bufferWidth, bufferHeight)
+                            lastFixedSize = bufferWidth to bufferHeight
                         }
 
                         override fun surfaceChanged(
@@ -97,6 +101,7 @@ private fun PreviewContentImpl(
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
                             // 清空状态并通知 ViewModel 释放 Surface
                             lastSentSurface = null
+                            lastFixedSize = null
                             vm.onPreviewSurfaceDestroyed()
                         }
                     })
@@ -110,10 +115,28 @@ private fun PreviewContentImpl(
                 }
             },
             update = { view: SurfaceView ->
-                // 全屏模式下需要更新点击行为
+                // 1. 全屏模式下需要更新点击行为
                 view.setOnClickListener(if (!isFullscreen) View.OnClickListener {
                     onCloseFullscreen()
                 } else null)
+
+                // 2. 切换横竖屏导致 buffer 分辨率变化时，更新 SurfaceView 的固定尺寸
+                //    （关键：AndroidView factory 只在首次组合执行，后续尺寸变化必须在 update 中主动调用）
+                val currentSize = lastFixedSize
+                val desiredW = bufferWidth
+                val desiredH = bufferHeight
+                if ((currentSize == null ||
+                            currentSize.first != desiredW ||
+                            currentSize.second != desiredH) &&
+                    desiredW > 0 && desiredH > 0
+                ) {
+                    try {
+                        view.holder.setFixedSize(desiredW, desiredH)
+                        lastFixedSize = desiredW to desiredH
+                    } catch (e: Exception) {
+                        // Surface 尚未创建或已销毁时 setFixedSize 可能抛 IllegalStateException
+                    }
+                }
             }
         )
 

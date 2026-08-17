@@ -110,6 +110,7 @@ fun TasksScreen(
 
     // 是否处于全屏模式
     var isFullscreen by remember { mutableStateOf(false) }
+    val isLandscape by vm.isLandscape.collectAsStateWithLifecycle()
 
     // 已安装可启动应用列表（初始为空，首次进入后台加载）
     var installedApps by remember { mutableStateOf<List<AppManager.AppInfo>>(emptyList()) }
@@ -172,14 +173,31 @@ fun TasksScreen(
                     // 复用预览内容（点击进入全屏）
                     previewContent(vm, false, { isFullscreen = true })
 
-                    // 小窗右上角状态信息
+                    // 小窗左上角：状态信息 + 分辨率方向
                     MonitorStatusOverlay(
                         isRunning = isRunning,
                         frameCount = frameCount,
+                        displaySize = displaySize,
+                        isLandscape = isLandscape,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp)
                     )
+
+                    // 小窗右上角：手动切换横竖屏方向按钮（兜底）
+                    IconButton(
+                        onClick = { vm.toggleDisplayOrientation() },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ScreenRotation,
+                            contentDescription = "切换横竖屏",
+                            tint = Color.White
+                        )
+                    }
                 }
 
                 // ---------- 预览区下方：App 启动功能 ----------
@@ -201,9 +219,12 @@ fun TasksScreen(
                         launching = true
                         scope.launch(Dispatchers.IO) {
                             try {
-                                // 传入虚拟显示器 displayId：让 App 启动到预览区的虚拟显示器上
-                                // 而不是跳转到前台主屏（displayId<=0 时退化为前台启动）
-                                AppManager.launchApp(context, app.packageName, vm.displayId)
+                                // 先检测 App 横竖屏方向 → 必要时重建虚拟显示器 → 再启动到 VD
+                                // （返回的提示信息已经通过 vm.executeMessage 触发 Toast）
+                                vm.launchAppWithOrientationAdaptation(
+                                    context = context,
+                                    packageName = app.packageName
+                                )
                             } finally {
                                 launching = false
                             }
@@ -250,6 +271,7 @@ fun TasksScreen(
             FullscreenMonitor(
                 vm = vm,
                 displaySize = displaySize,
+                isLandscape = isLandscape,
                 onExit = { isFullscreen = false },
                 previewContent = previewContent
             )
@@ -273,6 +295,7 @@ fun TasksScreen(
 private fun FullscreenMonitor(
     vm: MonitorViewModel,
     displaySize: Pair<Int, Int>,
+    isLandscape: Boolean,
     onExit: () -> Unit,
     previewContent: @Composable (MonitorViewModel, Boolean, () -> Unit) -> Unit
 ) {
@@ -286,7 +309,7 @@ private fun FullscreenMonitor(
     }
 
     // ---- 全屏进入/退出副作用 ----
-    DisposableEffect(Unit) {
+    DisposableEffect(isLandscape) {
         val activity = context.findActivity()
         val window = activity?.window
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
@@ -306,6 +329,13 @@ private fun FullscreenMonitor(
         // 进入：保持屏幕常亮
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // 进入：根据内容方向锁定 Activity 方向（替代原来的"强制横屏"，改为跟随 VD 内容方向）
+        activity?.requestedOrientation = if (isLandscape) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        }
+
         onDispose {
             // 退出：还原状态栏 + 导航栏显示
             controller?.show(WindowInsetsCompat.Type.statusBars())
@@ -319,12 +349,6 @@ private fun FullscreenMonitor(
             // 退出：清除屏幕常亮
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-    }
-
-    // ---- 强制横屏 ----
-    LaunchedEffect(Unit) {
-        context.findActivity()?.requestedOrientation =
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     }
 
     Box(
@@ -452,14 +476,17 @@ fun viewToVirtualDisplay(
 }
 
 /**
- * 小窗模式右上角状态信息
+ * 小窗模式左上角状态信息（运行状态 + 帧数 + 分辨率方向）
  */
 @Composable
 private fun MonitorStatusOverlay(
     isRunning: Boolean,
     frameCount: Long,
+    displaySize: Pair<Int, Int>,
+    isLandscape: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val (w, h) = displaySize
     Surface(
         modifier = modifier,
         color = Color.Black.copy(alpha = 0.6f),
@@ -476,6 +503,11 @@ private fun MonitorStatusOverlay(
             Text(
                 text = "帧: $frameCount",
                 color = Color.White,
+                fontSize = 10.sp
+            )
+            Text(
+                text = if (isLandscape) "横屏 ${w}x${h}" else "竖屏 ${w}x${h}",
+                color = Color(0xFFB3E5FC),
                 fontSize = 10.sp
             )
         }

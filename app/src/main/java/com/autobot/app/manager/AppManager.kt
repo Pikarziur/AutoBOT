@@ -2,6 +2,7 @@ package com.autobot.app.manager
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
@@ -38,6 +39,68 @@ object AppManager {
     ) {
         /** UI 展示文本：应用名(包名) */
         val displayText: String get() = "$appName($packageName)"
+    }
+
+    /**
+     * 虚拟显示器内容方向（用于动态切换预览分辨率与全屏模式 Activity 方向）
+     */
+    enum class AppOrientation {
+        PORTRAIT,    // 竖屏：宽<高（如 540x960）
+        LANDSCAPE,   // 横屏：宽>高（如 960x540）
+        UNSPECIFIED  // 未声明：跟随系统/用户旋转，默认竖屏兜底
+    }
+
+    /**
+     * 检测目标应用的首选屏幕方向（基于 Manifest 中声明的 launcher Activity 的 screenOrientation）
+     *
+     * 判定规则：
+     *   - LANDSCAPE / REVERSE_LANDSCAPE / SENSOR_LANDSCAPE / USER_LANDSCAPE → LANDSCAPE
+     *   - PORTRAIT / REVERSE_PORTRAIT / SENSOR_PORTRAIT / USER_PORTRAIT → PORTRAIT
+     *   - UNSPECIFIED / USER / BEHIND / SENSOR / FULL_SENSOR / LOCKED → UNSPECIFIED
+     *
+     * 若查询失败或无法解析 launcher Activity，返回 UNSPECIFIED，调用方应用默认竖屏兜底。
+     */
+    fun getAppPreferredOrientation(context: Context?, packageName: String): AppOrientation {
+        if (packageName.isBlank()) return AppOrientation.UNSPECIFIED
+        val ctx = context ?: return AppOrientation.UNSPECIFIED
+
+        return try {
+            val pm = ctx.packageManager
+            val launchIntent = pm.getLaunchIntentForPackage(packageName)
+                ?: return AppOrientation.UNSPECIFIED
+            val component = launchIntent.component
+                ?: return AppOrientation.UNSPECIFIED
+
+            val activityInfo = try {
+                pm.getActivityInfo(component, PackageManager.GET_META_DATA)
+            } catch (_: Exception) {
+                // 部分 ROM（如 MIUI/HarmonyOS）对第三方隐藏 ActivityInfo，
+                // 退回到查询 Manifest 中第一个 Activity 的声明
+                try {
+                    val pkgInfo = pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+                    pkgInfo.activities?.firstOrNull()
+                } catch (_: Exception) {
+                    null
+                }
+            } ?: return AppOrientation.UNSPECIFIED
+
+            when (activityInfo.screenOrientation) {
+                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+                ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE -> AppOrientation.LANDSCAPE
+
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
+                ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT -> AppOrientation.PORTRAIT
+
+                else -> AppOrientation.UNSPECIFIED
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "getAppPreferredOrientation failed for $packageName", e)
+            AppOrientation.UNSPECIFIED
+        }
     }
 
     /**

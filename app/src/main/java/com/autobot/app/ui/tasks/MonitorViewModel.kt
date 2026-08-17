@@ -1,11 +1,13 @@
 package com.autobot.app.ui.tasks
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.autobot.app.manager.AppManager
 import com.autobot.app.manager.ScriptTaskManager
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.TaskManager
@@ -80,6 +82,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     /** Shizuku 授权状态：未授权时 startVirtualDisplay 会直接失败 */
     private val _shizukuGranted = MutableStateFlow(ShizukuManager.isShizukuGranted())
     val shizukuGranted: StateFlow<Boolean> = _shizukuGranted.asStateFlow()
+
+    /**
+     * 当前内容方向（用于 UI 全屏模式锁定 Activity 方向）
+     *   true  = 横屏（如 960x540）
+     *   false = 竖屏（如 540x960）
+     *  默认跟随 CompositionService.orientation；用户手动切换后会覆盖
+     */
+    private val _isLandscape = MutableStateFlow(false)
+    val isLandscape: StateFlow<Boolean> = _isLandscape.asStateFlow()
 
     // ==================== 模式选择 / SH 脚本任务 ====================
 
@@ -347,11 +358,150 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val surface = compositionService.startVirtualDisplay(width, height)
             if (surface != null) {
                 _displaySize.value = width to height
+                _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
-                Log.i(TAG, "VirtualDisplay launched: ${width}x${height}")
+                Log.i(TAG, "VirtualDisplay launched: ${width}x${height} (landscape=${_isLandscape.value})")
             } else {
                 Log.e(TAG, "VirtualDisplay launch failed (surface null)")
             }
+        }
+    }
+
+    /**
+     * 手动切换虚拟显示器横竖屏方向（用户兜底按钮）
+     *   - 交换宽高 → 调用 CompositionService.restartVirtualDisplay 重建 VD
+     *   - 成功后更新 displaySize / isLandscape 供 UI 刷新
+     */
+    fun toggleDisplayOrientation() {
+        if (!_isRunning.value) {
+            Log.w(TAG, "toggleOrientation: VirtualDisplay not running")
+            return
+        }
+        val (curW, curH) = _displaySize.value
+        val newW = curH
+        val newH = curW
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val newSurface = compositionService.restartVirtualDisplay(newW, newH)
+            if (newSurface != null) {
+                _displaySize.value = newW to newH
+                _isLandscape.value = compositionService.isLandscape
+                Log.i(TAG, "VirtualDisplay orientation toggled: ${newW}x${newH} (landscape=${_isLandscape.value})")
+            } else {
+                // 重启失败：VD 可能处于未启动状态，同步 UI 状态
+                _isRunning.value = false
+                Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed")
+            }
+        }
+    }
+
+    /**
+     * 检测 App 首选方向并启动到虚拟显示器（自动适配横竖屏）
+     *
+     * 流程：
+     *   1. 查询 App 的 Manifest 声明方向 (PORTRAIT / LANDSCAPE / UNSPECIFIED)
+     *   2. 根据方向换算目标 VD 分辨率：
+     *        PORTRAIT    → 540 x 960
+     *        LANDSCAPE   → 960 x 540
+     *        UNSPECIFIED → 保持当前 VD 不重建（默认竖屏兜底）
+     *   3. 若目标分辨率与当前不一致 → 调用 restartVirtualDisplay 重建 VD
+     *   4. 启动 App 到虚拟显示器 (am start --display <id>)
+     *
+     * @param context     Context，用于查询 PackageManager
+     * @param packageName 目标 App 包名
+     * @return  Pair<Boolean, String>：(是否成功, 提示信息/错误原因)
+     */
+    suspend fun launchAppWithOrientationAdaptation(
+        context: Context,
+        packageName: String
+    ): Pair<Boolean, String> {
+        if (packageName.isBlank()) {
+            val r = false to "未选中有效应用"
+            _executeMessage.value = r.second; return r
+        }
+        // Shizuku 校验：启动 VD 与启动 App 都依赖 Shizuku
+        _shizukuGranted.value = ShizukuManager.isShizukuGranted()
+        if (!_shizukuGranted.value) {
+            val r = false to "Shizuku 未授权，无法启动虚拟显示器与 App"
+            _executeMessage.value = r.second; return r
+        }
+
+        // 1. 检测 App 首选方向
+        val pref = AppManager.getAppPreferredOrientation(context, packageName)
+        Log.i(TAG, "launchAppWithOrientationAdaptation: pkg=$packageName orientation=$pref")
+
+        // 2. 换算目标分辨率（竖屏基准 540x960，横屏则交换）
+        val targetW: Int
+        val targetH: Int
+        when (pref) {
+            AppManager.AppOrientation.LANDSCAPE -> {
+                targetW = CompositionService.DEFAULT_HEIGHT  // 960
+                targetH = CompositionService.DEFAULT_WIDTH   // 540
+            }
+            else -> {
+                // PORTRAIT / UNSPECIFIED 都用竖屏（UNSPECIFIED 默认竖屏兜底）
+                targetW = CompositionService.DEFAULT_WIDTH   // 540
+                targetH = CompositionService.DEFAULT_HEIGHT  // 960
+            }
+        }
+
+        // 3. 若 VD 尚未启动 → 用目标分辨率启动
+        if (!_isRunning.value) {
+            val surface = compositionService.startVirtualDisplay(targetW, targetH)
+            if (surface != null) {
+                _displaySize.value = targetW to targetH
+                _isLandscape.value = compositionService.isLandscape
+                _isRunning.value = true
+                Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
+            } else {
+                val r = false to "虚拟显示器启动失败，请确认 Shizuku 已授权"
+                _executeMessage.value = r.second; return r
+            }
+        } else {
+            // 4. 若 VD 已启动但分辨率不匹配 → 重建
+            val (curW, curH) = _displaySize.value
+            if (curW != targetW || curH != targetH) {
+                Log.i(TAG, "VD size mismatch: current ${curW}x${curH}, target ${targetW}x${targetH}, restarting…")
+                val newSurface = compositionService.restartVirtualDisplay(targetW, targetH)
+                if (newSurface != null) {
+                    _displaySize.value = targetW to targetH
+                    _isLandscape.value = compositionService.isLandscape
+                } else {
+                    _isRunning.value = false
+                    val r = false to "虚拟显示器切换方向失败，请重试"
+                    _executeMessage.value = r.second; return r
+                }
+            } else {
+                Log.i(TAG, "VD size already matches ${targetW}x${targetH}, skip restart")
+            }
+        }
+
+        // 5. 等待 displayId 可用（重建后 displayId 会变化，最多等待 800ms）
+        val maxWait = 8
+        var waited = 0
+        while (compositionService.displayId <= 0 && waited < maxWait) {
+            try {
+                Thread.sleep(100)
+            } catch (_: InterruptedException) {}
+            waited++
+        }
+
+        val dId = compositionService.displayId
+        if (dId <= 0) {
+            val r = false to "虚拟显示器未就绪（displayId=-1），请稍后重试"
+            _executeMessage.value = r.second; return r
+        }
+
+        // 6. 启动 App 到虚拟显示器
+        val ok = AppManager.launchApp(context, packageName, dId)
+        return if (ok) {
+            val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
+            _executeMessage.value = r.second
+            r
+        } else {
+            val r = false to "App 启动命令失败，请确认目标应用已安装"
+            _executeMessage.value = r.second
+            r
         }
     }
 

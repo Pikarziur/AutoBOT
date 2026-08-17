@@ -44,6 +44,9 @@ class CompositionService {
     private var capturer: NativeCapturer? = null
     private var displaySurface: Surface? = null
 
+    /** 缓存的预览 Surface（重启 VD 后自动重新绑定，无需 UI 侧重新通知） */
+    private var cachedPreviewSurface: Surface? = null
+
     // Shizuku 路径创建的虚拟显示器 handle（release 时使用）
     private var virtualDisplayHandle: DisplayServiceShizuku.VirtualDisplayHandle? = null
 
@@ -52,6 +55,56 @@ class CompositionService {
         private set
     var height: Int = DEFAULT_HEIGHT
         private set
+
+    /**
+     * 当前虚拟显示器是否为横屏（宽 > 高）
+     * 用于 UI 层判断预览比例与全屏 Activity 方向
+     */
+    val isLandscape: Boolean get() = width > height
+
+    /**
+     * 重启虚拟显示器并切换到新的分辨率（用于横竖屏切换）
+     *
+     * 流程：
+     *   1. 记录当前预览 Surface（若已绑定）
+     *   2. 停止旧 VD → 释放资源
+     *   3. 用新宽高创建 VD
+     *   4. 重新绑定预览 Surface
+     *
+     * @param newWidth  新宽度
+     * @param newHeight 新高度
+     * @return 成功返回新 Surface；失败返回 null（此时旧 VD 也已被释放以避免状态不一致）
+     */
+    fun restartVirtualDisplay(newWidth: Int, newHeight: Int): Surface? {
+        // 参数与当前一致 → 无需重建，直接返回现有 surface
+        if (newWidth == width && newHeight == height && capturer != null) {
+            Log.i(TAG, "restartVirtualDisplay skipped: size unchanged (${newWidth}x${newHeight})")
+            return displaySurface
+        }
+
+        Log.i(TAG, "Restarting VirtualDisplay: ${width}x${height} -> ${newWidth}x${newHeight}")
+
+        // 1. 暂存当前预览 Surface（重启后自动重新绑定）
+        val existingPreviewSurface = cachedPreviewSurface
+
+        // 2. 先彻底释放旧 VD 与 Native 资源，避免占用 display slot / Surface
+        stopVirtualDisplay()
+
+        // 3. 用新尺寸启动 VD（走与 startVirtualDisplay 相同的 Shizuku 路径）
+        val newSurface = startVirtualDisplay(newWidth, newHeight)
+        if (newSurface == null) {
+            Log.e(TAG, "restartVirtualDisplay: startVirtualDisplay failed at ${newWidth}x${newHeight}")
+            return null
+        }
+
+        // 4. 如果之前有绑定预览，自动重新绑定到新的 NativeCapturer
+        if (existingPreviewSurface != null && existingPreviewSurface.isValid) {
+            attachPreviewSurface(existingPreviewSurface)
+            Log.i(TAG, "restartVirtualDisplay: re-attached previous preview surface")
+        }
+
+        return newSurface
+    }
 
     /**
      * 虚拟显示器的 Display ID
@@ -137,6 +190,7 @@ class CompositionService {
      * Surface 销毁时调用 detachPreviewSurface
      */
     fun attachPreviewSurface(surface: Surface?) {
+        cachedPreviewSurface = surface
         capturer?.setPreviewSurface(surface)
         Log.i(TAG, "Preview surface attached: $surface")
     }
@@ -145,6 +199,7 @@ class CompositionService {
      * 解绑预览 Surface
      */
     fun detachPreviewSurface() {
+        cachedPreviewSurface = null
         capturer?.setPreviewSurface(null)
         Log.i(TAG, "Preview surface detached")
     }
