@@ -2,6 +2,7 @@ package com.autobot.app.ui.tasks
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.WindowManager
@@ -11,20 +12,26 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ScreenRotation
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -45,6 +52,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -57,19 +66,22 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.AppManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 后台任务页面 - Compose 实现（MAA-Meow 风格）
+ * 后台任务页面 - Compose 实现（完美复刻 MAA-Meow BackgroundTaskView 布局）
  *
- * 布局：
- * 1. 小窗模式：顶部虚拟显示器预览 → 下方 App 下拉列表 + 三角形启动按钮
- *    点击预览画面进入全屏模式
- * 2. 全屏模式：Box 叠加层覆盖整个界面，背景黑色
- *    - 隐藏系统状态栏/导航栏
- *    - 锁定 Activity 方向跟随 VD 内容方向
- *    - 触摸事件经 viewToVirtualDisplay 坐标映射后注入虚拟显示器
- *    - 右上角关闭按钮退出全屏
+ * 整体结构：
+ *   Box(fillMaxSize)
+ *     └ Column(fillMaxSize + statusBarsPadding + padding)
+ *         ├ 预览区 Box(fillMaxWidth + weight(3f))   ← 占总高度 30%
+ *         │   └ VirtualDisplayPreview（BoxWithConstraints + 按宽高比计算 Card 尺寸）
+ *         ├ Spacer(8.dp)
+ *         └ 下方区 Column(fillMaxWidth + weight(7f))  ← 占总高度 70%
+ *             └ App 下拉列表 + 三角形播放按钮
+ *
+ * 全屏模式：Box(fillMaxSize + black) + previewContent + 触摸事件注入
  */
 @Composable
 fun TasksScreen(
@@ -87,13 +99,14 @@ fun TasksScreen(
     var isFullscreen by remember { mutableStateOf(false) }
     val isLandscape by vm.isLandscape.collectAsStateWithLifecycle()
 
+    var isSurfaceAvailable by remember { mutableStateOf(false) }
+    var previewBounds by remember { mutableStateOf<Rect?>(null) }
+
     // 已安装可启动应用列表
     var installedApps by remember { mutableStateOf<List<AppManager.AppInfo>>(emptyList()) }
     var selectedApp by remember { mutableStateOf<AppManager.AppInfo?>(null) }
     var appMenuExpanded by remember { mutableStateOf(false) }
     var launching by remember { mutableStateOf(false) }
-
-    val previewContent = PreviewContent
 
     // executeMessage 变化时弹 Toast
     LaunchedEffect(executeMessage) {
@@ -119,84 +132,112 @@ fun TasksScreen(
     // 定时刷新帧计数
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(500)
+            delay(500)
             vm.refreshFrameCount()
+        }
+    }
+
+    // 可复用的预览内容（movableContentOf 包装，小窗/全屏切换时复用同一 SurfaceView）
+    val previewContent = remember {
+        androidx.compose.runtime.movableContentOf {
+            PreviewContent(
+                vm = vm,
+                isFullscreen = isFullscreen,
+                onSurfaceAvailable = { isSurfaceAvailable = true },
+                onSurfaceDestroyed = { isSurfaceAvailable = false }
+            )
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
         if (!isFullscreen) {
-            // ============ 小窗模式 ============
+            // ============ 小窗模式（复刻 MAA-Meow BackgroundTaskView） ============
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 8.dp, bottom = 8.dp)
             ) {
-                // ---------- 顶部：虚拟显示器预览 ----------
+                // ---------- 预览图区域：占总高度 30% ----------
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(
-                            displaySize.first.toFloat() / displaySize.second.toFloat()
-                        )
-                        .background(Color.Black)
+                        .weight(3f)
                 ) {
-                    previewContent(vm, false) { isFullscreen = true }
+                    VirtualDisplayPreview(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .onGloballyPositioned { coords ->
+                                // 记录预览区在窗口中的位置（用于画中画，此处保留接口）
+                                val bounds = coords.boundsInWindow()
+                                val next = Rect(
+                                    bounds.left.toInt(),
+                                    bounds.top.toInt(),
+                                    bounds.right.toInt(),
+                                    bounds.bottom.toInt(),
+                                )
+                                if (!next.isEmpty && next != previewBounds) {
+                                    previewBounds = next
+                                }
+                            },
+                        isRunning = isRunning,
+                        isSurfaceAvailable = isSurfaceAvailable,
+                        displaySize = displaySize,
+                        onClick = { isFullscreen = true }
+                    ) {
+                        previewContent()
+                    }
+                }
 
-                    // 左上角状态信息
-                    MonitorStatusOverlay(
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // ---------- 下方业务区：占总高度 70% ----------
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(7f)
+                ) {
+                    AppLauncherRow(
+                        selectedApp = selectedApp,
+                        installedApps = installedApps,
+                        menuExpanded = appMenuExpanded,
+                        onMenuToggle = { appMenuExpanded = !appMenuExpanded },
+                        onDismissRequest = { appMenuExpanded = false },
+                        onSelectApp = { app ->
+                            selectedApp = app
+                            appMenuExpanded = false
+                        },
+                        launching = launching,
+                        onLaunchClick = {
+                            val app = selectedApp ?: return@AppLauncherRow
+                            launching = true
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    vm.launchAppWithOrientationAdaptation(
+                                        context = context,
+                                        packageName = app.packageName
+                                    )
+                                } finally {
+                                    launching = false
+                                }
+                            }
+                        }
+                    )
+
+                    // 状态信息（运行状态 + 帧数 + 分辨率方向）
+                    MonitorStatusCard(
                         isRunning = isRunning,
                         frameCount = frameCount,
                         displaySize = displaySize,
                         isLandscape = isLandscape,
+                        onToggleOrientation = { vm.toggleDisplayOrientation() },
                         modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(8.dp)
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
                     )
-
-                    // 右上角横竖屏切换按钮
-                    IconButton(
-                        onClick = { vm.toggleDisplayOrientation() },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ScreenRotation,
-                            contentDescription = "切换横竖屏",
-                            tint = Color.White
-                        )
-                    }
                 }
-
-                // ---------- 下方：App 下拉列表 + 三角形启动按钮 ----------
-                AppLauncherRow(
-                    selectedApp = selectedApp,
-                    installedApps = installedApps,
-                    menuExpanded = appMenuExpanded,
-                    onMenuToggle = { appMenuExpanded = !appMenuExpanded },
-                    onDismissRequest = { appMenuExpanded = false },
-                    onSelectApp = { app ->
-                        selectedApp = app
-                        appMenuExpanded = false
-                    },
-                    launching = launching,
-                    onLaunchClick = {
-                        val app = selectedApp ?: return@AppLauncherRow
-                        launching = true
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                vm.launchAppWithOrientationAdaptation(
-                                    context = context,
-                                    packageName = app.packageName
-                                )
-                            } finally {
-                                launching = false
-                            }
-                        }
-                    }
-                )
             }
         } else {
             // ============ 全屏模式 ============
@@ -205,8 +246,138 @@ fun TasksScreen(
                 displaySize = displaySize,
                 isLandscape = isLandscape,
                 onExit = { isFullscreen = false },
-                previewContent = previewContent
+                previewContent = {
+                    previewContent()
+                }
             )
+        }
+    }
+}
+
+/**
+ * 虚拟显示器预览组件（完美复刻 MAA-Meow VirtualDisplayPreview）
+ *
+ * 关键点：
+ * 1. BoxWithConstraints 拿到父容器最大宽高
+ * 2. 按虚拟显示器宽高比（bufferWidth/bufferHeight）计算 Card 尺寸
+ *    - 若用高度算出的宽度 <= 最大宽度：高度优先，宽度按比例
+ *    - 否则：宽度优先，高度按比例
+ * 3. Card + shape medium + elevation 4dp + clickable
+ * 4. 内部 Box(fillMaxSize) 放 content
+ * 5. 未运行/surface 不可用时显示半透明遮罩 + 提示文字
+ * 6. 右上角状态指示器
+ */
+@Composable
+private fun VirtualDisplayPreview(
+    modifier: Modifier = Modifier,
+    isRunning: Boolean,
+    isSurfaceAvailable: Boolean,
+    displaySize: Pair<Int, Int>,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val (bufferWidth, bufferHeight) = displaySize
+    val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
+        bufferWidth.toFloat() / bufferHeight.toFloat()
+    } else {
+        16f / 9f  // 兜底
+    }
+
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        val maxWidthPx = maxWidth
+        val maxHeightPx = maxHeight
+        val widthFromHeight = maxHeightPx * aspectRatio
+        val heightFromWidth = maxWidthPx / aspectRatio
+        val (cardWidth, cardHeight) = if (widthFromHeight <= maxWidthPx) {
+            widthFromHeight to maxHeightPx
+        } else {
+            maxWidthPx to heightFromWidth
+        }
+
+        Card(
+            modifier = Modifier
+                .width(cardWidth)
+                .height(cardHeight)
+                .clickable(onClick = onClick),
+            shape = MaterialTheme.shapes.medium,
+            colors = CardDefaults.cardColors(
+                containerColor = Color.Black
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                content()
+
+                when {
+                    !isRunning -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "虚拟显示器未启动",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    !isSurfaceAvailable -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "等待 Surface...",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // 右上角状态指示器
+                val (dotColor, label) = when {
+                    isRunning && isSurfaceAvailable -> {
+                        Color(0xFF4CAF50) to "运行中"
+                    }
+                    isRunning -> {
+                        Color(0xFFFF9800) to "等待 Surface"
+                    }
+                    else -> {
+                        Color(0xFF9E9E9E) to "未启动"
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(
+                            Color.Black.copy(alpha = 0.5f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(dotColor, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White
+                    )
+                }
+            }
         }
     }
 }
@@ -225,7 +396,7 @@ private fun FullscreenMonitor(
     displaySize: Pair<Int, Int>,
     isLandscape: Boolean,
     onExit: () -> Unit,
-    previewContent: @Composable (MonitorViewModel, Boolean, () -> Unit) -> Unit
+    previewContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -314,7 +485,7 @@ private fun FullscreenMonitor(
                 }
             }
     ) {
-        previewContent(vm, true, onExit)
+        previewContent()
 
         IconButton(
             onClick = onExit,
@@ -376,45 +547,6 @@ fun viewToVirtualDisplay(
 }
 
 /**
- * 小窗模式左上角状态信息（运行状态 + 帧数 + 分辨率方向）
- */
-@Composable
-private fun MonitorStatusOverlay(
-    isRunning: Boolean,
-    frameCount: Long,
-    displaySize: Pair<Int, Int>,
-    isLandscape: Boolean,
-    modifier: Modifier = Modifier
-) {
-    val (w, h) = displaySize
-    Surface(
-        modifier = modifier,
-        color = Color.Black.copy(alpha = 0.6f),
-        shape = MaterialTheme.shapes.small
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        ) {
-            Text(
-                text = if (isRunning) "运行中" else "未启动",
-                color = if (isRunning) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                fontSize = 11.sp
-            )
-            Text(
-                text = "帧: $frameCount",
-                color = Color.White,
-                fontSize = 10.sp
-            )
-            Text(
-                text = if (isLandscape) "横屏 ${w}x${h}" else "竖屏 ${w}x${h}",
-                color = Color(0xFFB3E5FC),
-                fontSize = 10.sp
-            )
-        }
-    }
-}
-
-/**
  * 从 Context 找到 Activity
  */
 private fun android.content.Context.findActivity(): Activity? {
@@ -427,7 +559,7 @@ private fun android.content.Context.findActivity(): Activity? {
 }
 
 /**
- * 预览区下方：App 启动条
+ * App 启动条
  *
  * 左侧：App 选择下拉框（图标 + 应用名 + 展开箭头）
  * 右侧：三角形播放按钮（蓝色填充圆形 IconButton）
@@ -448,8 +580,7 @@ private fun AppLauncherRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(top = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -557,6 +688,72 @@ private fun AppLauncherRow(
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
+        }
+    }
+}
+
+/**
+ * 状态信息卡片
+ */
+@Composable
+private fun MonitorStatusCard(
+    isRunning: Boolean,
+    frameCount: Long,
+    displaySize: Pair<Int, Int>,
+    isLandscape: Boolean,
+    onToggleOrientation: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val (w, h) = displaySize
+
+    Card(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(
+                    text = if (isRunning) "运行中" else "未启动",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isRunning) Color(0xFF4CAF50)
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "帧: $frameCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = if (isLandscape) "横屏 ${w}x${h}" else "竖屏 ${w}x${h}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(
+                onClick = onToggleOrientation,
+                modifier = Modifier
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        CircleShape
+                    )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ScreenRotation,
+                    contentDescription = "切换横竖屏",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }
