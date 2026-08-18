@@ -1,6 +1,6 @@
 package com.autobot.app.server
 
-import android.graphics.ImageFormat
+import android.graphics.PixelFormat
 import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
@@ -136,7 +136,7 @@ object ServerMain {
             // VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，YUV_420_888 会导致
             // "producer output buffer format 0x1 doesn't match ImageReader's configured buffer format 0x23"
             Log.i(TAG, "ImageReader.newInstance(w=${req.width}, h=${req.height}, fmt=RGBA_8888, maxImages=$MAX_IMAGES) ...")
-            val reader = ImageReader.newInstance(req.width, req.height, ImageFormat.RGBA_8888, MAX_IMAGES)
+            val reader = ImageReader.newInstance(req.width, req.height, PixelFormat.RGBA_8888, MAX_IMAGES)
             Log.i(TAG, "✅ ImageReader OK: surface=${reader.surface}")
 
             // 6: createVirtualDisplay（直接把 ImageReader.surface 给 VD 当输出，不需要跨进程！）
