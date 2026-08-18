@@ -375,13 +375,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             val (surface, errMsg) = compositionService.startVirtualDisplay(width, height)
-            if (surface != null) {
+            // 新架构下 VD 由 server 进程创建，App 端不再持有 VD Surface。
+            // 用 errMsg 是否为空来判断成功/失败（而非 surface != null）
+            if (errMsg.isBlank()) {
                 _displaySize.value = width to height
                 _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
                 Log.i(TAG, "VirtualDisplay launched: ${width}x${height} (landscape=${_isLandscape.value})")
             } else {
-                val msg = if (errMsg.isNotBlank()) errMsg else "VirtualDisplay launch failed (surface null)"
+                val msg = errMsg.ifBlank { "VirtualDisplay launch failed" }
                 Log.e(TAG, msg)
                 appendLog("[${stamp()}] ✗ $msg")
                 _executeMessage.value = msg
@@ -405,14 +407,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             val (newSurface, errMsg) = compositionService.restartVirtualDisplay(newW, newH)
-            if (newSurface != null) {
+            // 新架构下用 errMsg 判断成功/失败
+            if (errMsg.isBlank()) {
                 _displaySize.value = newW to newH
                 _isLandscape.value = compositionService.isLandscape
                 Log.i(TAG, "VirtualDisplay orientation toggled: ${newW}x${newH} (landscape=${_isLandscape.value})")
             } else {
                 // 重启失败：VD 可能处于未启动状态，同步 UI 状态
                 _isRunning.value = false
-                val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器切换方向失败，请重试"
+                val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
                 Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed: $msg")
                 appendLog("[${stamp()}] ✗ $msg")
                 _executeMessage.value = msg
@@ -476,13 +479,13 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         // 3. 若 VD 尚未启动 → 用目标分辨率启动
         if (!_isRunning.value) {
             val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
-            if (surface != null) {
+            if (errMsg.isBlank()) {
                 _displaySize.value = targetW to targetH
                 _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
                 Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
             } else {
-                val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器启动失败，请确认 Shizuku 已授权"
+                val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
                 appendLog("[${stamp()}] ✗ $msg")
                 val r = false to msg
                 _executeMessage.value = r.second; return r
@@ -493,12 +496,12 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             if (curW != targetW || curH != targetH) {
                 Log.i(TAG, "VD size mismatch: current ${curW}x${curH}, target ${targetW}x${targetH}, restarting…")
                 val (newSurface, errMsg) = compositionService.restartVirtualDisplay(targetW, targetH)
-                if (newSurface != null) {
+                if (errMsg.isBlank()) {
                     _displaySize.value = targetW to targetH
                     _isLandscape.value = compositionService.isLandscape
                 } else {
                     _isRunning.value = false
-                    val msg = if (errMsg.isNotBlank()) errMsg else "虚拟显示器切换方向失败，请重试"
+                    val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
                     appendLog("[${stamp()}] ✗ $msg")
                     val r = false to msg
                     _executeMessage.value = r.second; return r
