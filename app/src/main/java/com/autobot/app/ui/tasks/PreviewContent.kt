@@ -3,7 +3,6 @@ package com.autobot.app.ui.tasks
 import android.graphics.PixelFormat
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -99,19 +98,15 @@ fun PreviewContent(
                         }
                     })
 
-                    // 小窗模式下点击切换全屏；全屏模式下点击不切换（避免误触）
-                    if (!isFullscreen) {
-                        setOnClickListener { }
-                    } else {
-                        setOnClickListener(null)
-                    }
+                    // SurfaceView 不设置 OnClickListener，让点击事件透传给父级 Card 的 clickable 处理
+                    // 之前设置空 OnClickListener 会消费点击事件，导致全屏切换失效
+                    setOnClickListener(null)
                 }
             },
             update = { view: SurfaceView ->
-                // 1. 全屏模式下需要更新点击行为
-                view.setOnClickListener(if (!isFullscreen) View.OnClickListener {
-                    // 点击切换由父级 VirtualDisplayPreview 的 clickable 处理，这里置空避免重复
-                } else null)
+                // SurfaceView 始终不消费点击事件，由父级 Card 的 clickable 统一处理全屏切换
+                // （小窗模式 → 点击切全屏；全屏模式 → FullscreenMonitor 的 pointerInput 处理触摸注入）
+                view.setOnClickListener(null)
 
                 // 2. 切换横竖屏导致 buffer 分辨率变化时，更新 SurfaceView 的固定尺寸
                 val currentSize = lastFixedSize
