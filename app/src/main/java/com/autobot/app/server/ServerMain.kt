@@ -1,8 +1,6 @@
 package com.autobot.app.server
 
 import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
 import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
@@ -134,8 +132,11 @@ object ServerMain {
             Log.i(TAG, "✅ FakeContext OK: pkg=${fakeCtx.packageName}")
 
             // 5: ImageReader（server 端自产自销：生产端是 VD，消费端是 onImageAvailable 读帧）
-            Log.i(TAG, "ImageReader.newInstance(w=${req.width}, h=${req.height}, fmt=YUV_420_888, maxImages=$MAX_IMAGES) ...")
-            val reader = ImageReader.newInstance(req.width, req.height, ImageFormat.YUV_420_888, MAX_IMAGES)
+            // ★关键：用 RGBA_8888 而非 YUV_420_888★
+            // VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，YUV_420_888 会导致
+            // "producer output buffer format 0x1 doesn't match ImageReader's configured buffer format 0x23"
+            Log.i(TAG, "ImageReader.newInstance(w=${req.width}, h=${req.height}, fmt=RGBA_8888, maxImages=$MAX_IMAGES) ...")
+            val reader = ImageReader.newInstance(req.width, req.height, ImageFormat.RGBA_8888, MAX_IMAGES)
             Log.i(TAG, "✅ ImageReader OK: surface=${reader.surface}")
 
             // 6: createVirtualDisplay（直接把 ImageReader.surface 给 VD 当输出，不需要跨进程！）
@@ -198,16 +199,18 @@ object ServerMain {
     }
 
     /**
-     * 从 ImageReader 拿到最新一帧 → YUV_420_888 → JPEG 压缩 → MSG_FRAME 发 stdout pipe
+     * 从 ImageReader 拿到最新一帧 → RGBA_8888 → Bitmap → JPEG 压缩 → MSG_FRAME 发 stdout pipe
      * 带简单的节流：minSendIntervalNs 以下的帧直接丢弃（避免 pipe 缓冲积压）
+     *
+     * 为什么用 RGBA_8888？
+     *   VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，YUV_420_888 会导致格式不匹配。
+     *   RGBA → Bitmap.compress(JPEG) 是最稳健的跨设备 JPEG 压缩方式。
      */
     private var lastSendTimeNs = 0L
-    private val jpegRectPool = ThreadLocal.withInitial { Rect() }
 
     private fun trySendFrame(reader: ImageReader, outPipe: OutputStream, minSendIntervalNs: Long) {
         val now = System.nanoTime()
         if (now - lastSendTimeNs < minSendIntervalNs) {
-            // 简单 drop
             val img: Image? = try { reader.acquireLatestImage() } catch (_: Exception) { null }
             img?.close()
             return
@@ -223,23 +226,29 @@ object ServerMain {
             val w = image.width
             val h = image.height
             val planes = image.planes
-            val yBuffer = planes[0].buffer
-            val uBuffer = planes[1].buffer
-            val vBuffer = planes[2].buffer
-            val yRowStride = planes[0].rowStride
-            val uvRowStride = planes[1].rowStride
-            val uvPixelStride = planes[1].pixelStride
+            val rgbaBuffer = planes[0].buffer  // RGBA_8888 只有 1 个 plane
+            val rowStride = planes[0].rowStride
+            val rowBytes = w * 4  // RGBA 每像素 4 字节
 
-            val nv21 = yuv420ToNv21(w, h, yBuffer, uBuffer, vBuffer, yRowStride, uvRowStride, uvPixelStride)
-            val yuv = YuvImage(nv21, ImageFormat.NV21, w, h, null)
-
-            val jpegBaos = ByteArrayOutputStream(64 * 1024)
-            val rect = jpegRectPool.get()
-            rect.set(0, 0, w, h)
-            if (!yuv.compressToJpeg(rect, jpegQuality, jpegBaos)) {
-                Log.w(TAG, "compressToJpeg returned false")
-                return
+            // 将 RGBA 数据拷贝到紧凑 ByteBuffer（处理行对齐填充）
+            val packedBuffer = java.nio.ByteBuffer.allocate(rowBytes * h)
+            val rowBuf = ByteArray(rowStride)
+            for (row in 0 until h) {
+                rgbaBuffer.position(row * rowStride)
+                rgbaBuffer.get(rowBuf, 0, rowBytes)
+                packedBuffer.put(rowBuf, 0, rowBytes)
             }
+            packedBuffer.flip()
+
+            // 创建 Bitmap 并从 RGBA 数据填充像素
+            val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(packedBuffer)
+
+            // JPEG 压缩
+            val jpegBaos = ByteArrayOutputStream(64 * 1024)
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, jpegQuality, jpegBaos)
+            bitmap.recycle()
+
             val jpegBytes = jpegBaos.toByteArray()
             val idx = frameIndex++
             val pkt = FramePacket(width = w, height = h, jpegBytes = jpegBytes, frameIndex = idx)
@@ -250,62 +259,6 @@ object ServerMain {
         } finally {
             image.close()
         }
-    }
-
-    /**
-     * YUV_420_888 → NV21（YuvImage 只支持 NV21 作为 compressToJpeg 输入格式）
-     *  - YUV_420_888 是 3-plane (Y, U, V)，U/V rowStride/pixelStride 可能与 plane buffer size 不一致
-     *  - NV21 是 YYYY... + VUVU... 交替，U/V 行 2x2 亚采样，U/V pixelStride=2
-     */
-    private fun yuv420ToNv21(
-        w: Int, h: Int,
-        yBuf: java.nio.ByteBuffer,
-        uBuf: java.nio.ByteBuffer,
-        vBuf: java.nio.ByteBuffer,
-        yRowStride: Int,
-        uvRowStride: Int,
-        uvPixelStride: Int
-    ): ByteArray {
-        val ySize = w * h
-        val nv21 = ByteArray(ySize * 3 / 2) // Y + V/U interleaved
-        val yArr = ByteArray(yBuf.remaining())
-        yBuf.duplicate().get(yArr)
-
-        // 简化：如果 yRowStride == w（row 对齐正好为 1 行宽），直接拷贝
-        if (yRowStride == w) {
-            System.arraycopy(yArr, 0, nv21, 0, ySize)
-        } else {
-            for (row in 0 until h) {
-                val srcOff = row * yRowStride
-                val dstOff = row * w
-                System.arraycopy(yArr, srcOff, nv21, dstOff, w)
-            }
-        }
-
-        // 拷贝 VU plane
-        @Suppress("unused")
-        val uvSize = ySize / 4
-        val uArr = ByteArray(uBuf.remaining())
-        val vArr = ByteArray(vBuf.remaining())
-        uBuf.duplicate().get(uArr)
-        vBuf.duplicate().get(vArr)
-
-        val uvDstOffset = ySize
-        // NV21: V U V U ... (interleaved, every 2x2 luma -> one VU pair)
-        for (row in 0 until h step 2) {
-            val uvSrcRowOff = (row / 2) * uvRowStride
-            val uvDstRowOff = (row / 2) * w  // each subsampled row has w/2 VU pairs
-            for (col in 0 until w step 2) {
-                val srcIdx = uvSrcRowOff + (col / 2) * uvPixelStride
-                val dstIdx = uvDstOffset + uvDstRowOff + col
-                // NV21 order: V then U
-                nv21[dstIdx] = vArr[srcIdx]
-                if (dstIdx + 1 < nv21.size) {
-                    nv21[dstIdx + 1] = uArr[srcIdx]
-                }
-            }
-        }
-        return nv21
     }
 
     private fun writeResp(out: OutputStream, ok: Boolean, displayId: Int, error: String) {
