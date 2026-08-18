@@ -1,33 +1,31 @@
 package com.autobot.app.service
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.hardware.display.VirtualDisplay
 import android.util.Log
 import android.view.Surface
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.nativelib.NativeCapturer
+import com.autobot.app.third.DisplayManagerHelper
 import com.autobot.app.util.ShellExecutor
 
 /**
  * 虚拟显示器合成服务
  *
- * 负责：
- * 1. 通过 Shizuku 调用系统 DisplayManager.createVirtualDisplay() 创建虚拟显示，
- *    将屏幕画面输出到 NativeCapturer 提供的 Surface
- * 2. 持有 NativeCapturer 并把预览 Surface 绑定/解绑
- * 3. 提供触摸事件注入接口（通过 input tap/swipe 命令模拟）
+ * 核心改进（参照 MAA-Meow）：
+ * 1. 用 DisplayManagerHelper 替代 DisplayServiceShizuku
+ *    - 通过 DisplayManager(Context) 包私有构造器 + FakeContext 实例化
+ *    - 调用 DisplayManager.createVirtualDisplay(name, w, h, dpi, surface, flags) 6 参重载
+ *    - 绕过 MIUI 隐藏 API 过滤（用公开类公开方法，不走 IDisplayManager AIDL 接口反射）
+ * 2. packageName 传 "com.android.shell"（FakeContext），AttributionSource 用 SHELL_UID
+ * 3. 通过 ShizukuBinderWrapper 包装 DisplayManagerGlobal 的 binder，使 binder 调用走 shell uid
  *
  * 权限路径：
- *  - 不需要 MediaProjection 弹窗，不需要用户在运行时确认
  *  - 仅依赖 Shizuku 授权（shell uid 持有 MANAGE_DISPLAYS 系统级权限）
- *  - 调用 DisplayServiceShizuku.createVirtualDisplay() 完成创建
- *
- * 使用流程：
- *   1. 检查 ShizukuManager.isShizukuGranted() == true
- *   2. 调用 startVirtualDisplay()，内部 NativeCapturer.setupNativeCapturer() 拿 Surface
- *   3. DisplayServiceShizuku.createVirtualDisplay(name, w, h, dpi, surface)
- *   4. 销毁时调用 stopVirtualDisplay() 反向释放资源
+ *  - 不需要 MediaProjection 弹窗，不需要用户在运行时确认
  */
-class CompositionService {
+class CompositionService(private val context: Context) {
 
     companion object {
         private const val TAG = "CompositionService"
@@ -37,112 +35,57 @@ class CompositionService {
         const val DEFAULT_HEIGHT = 960
         const val DEFAULT_DPI = 240
 
-        // 虚拟显示器名称（用于 dumpsys display 排查）
+        // 虚拟显示器名称
         private const val VIRTUAL_DISPLAY_NAME = "AutoBOT-VirtualDisplay"
     }
 
     private var capturer: NativeCapturer? = null
     private var displaySurface: Surface? = null
 
-    /** 缓存的预览 Surface（重启 VD 后自动重新绑定，无需 UI 侧重新通知） */
+    /** 缓存的预览 Surface（重启 VD 后自动重新绑定） */
     private var cachedPreviewSurface: Surface? = null
 
-    // Shizuku 路径创建的虚拟显示器 handle（release 时使用）
-    private var virtualDisplayHandle: DisplayServiceShizuku.VirtualDisplayHandle? = null
+    /** VirtualDisplay 对象（release 时调用其 release()） */
+    private var virtualDisplay: VirtualDisplay? = null
 
-    // 虚拟显示器配置
     var width: Int = DEFAULT_WIDTH
         private set
     var height: Int = DEFAULT_HEIGHT
         private set
 
-    /**
-     * 当前虚拟显示器是否为横屏（宽 > 高）
-     * 用于 UI 层判断预览比例与全屏 Activity 方向
-     */
     val isLandscape: Boolean get() = width > height
 
     /**
-     * 重启虚拟显示器并切换到新的分辨率（用于横竖屏切换）
-     *
-     * 流程：
-     *   1. 记录当前预览 Surface（若已绑定）
-     *   2. 停止旧 VD → 释放资源
-     *   3. 用新宽高创建 VD
-     *   4. 重新绑定预览 Surface
-     *
-     * @param newWidth  新宽度
-     * @param newHeight 新高度
-     * @return 成功返回 Pair(newSurface, "")；失败返回 Pair(null, 错误文案)（此时旧 VD 也已被释放以避免状态不一致）
-     */
-    fun restartVirtualDisplay(newWidth: Int, newHeight: Int): Pair<Surface?, String> {
-        // 参数与当前一致 → 无需重建，直接返回现有 surface
-        if (newWidth == width && newHeight == height && capturer != null) {
-            Log.i(TAG, "restartVirtualDisplay skipped: size unchanged (${newWidth}x${newHeight})")
-            return displaySurface to ""
-        }
-
-        Log.i(TAG, "Restarting VirtualDisplay: ${width}x${height} -> ${newWidth}x${newHeight}")
-
-        // 1. 暂存当前预览 Surface（重启后自动重新绑定）
-        val existingPreviewSurface = cachedPreviewSurface
-
-        // 2. 先彻底释放旧 VD 与 Native 资源，避免占用 display slot / Surface
-        stopVirtualDisplay()
-
-        // 3. 用新尺寸启动 VD（走与 startVirtualDisplay 相同的 Shizuku 路径）
-        val (newSurface, err) = startVirtualDisplay(newWidth, newHeight)
-        if (newSurface == null) {
-            Log.e(TAG, "restartVirtualDisplay: startVirtualDisplay failed at ${newWidth}x${newHeight}, err=$err")
-            return null to err
-        }
-
-        // 4. 如果之前有绑定预览，自动重新绑定到新的 NativeCapturer
-        if (existingPreviewSurface != null && existingPreviewSurface.isValid) {
-            attachPreviewSurface(existingPreviewSurface)
-            Log.i(TAG, "restartVirtualDisplay: re-attached previous preview surface")
-        }
-
-        return newSurface to ""
-    }
-
-    /**
      * 虚拟显示器的 Display ID
-     *
-     * - 创建成功后通过反射从 VirtualDisplay.getDisplay().getDisplayId() 获取
-     * - 用途：`am start --display <displayId>` 让目标 App 启动到此虚拟显示器上
-     *   （而不是默认显示器/前台）
-     * - 未启动时返回 -1
+     * 用于 am start --display <displayId> 让 App 启动到虚拟显示器
      */
-    val displayId: Int get() = virtualDisplayHandle?.displayId ?: -1
+    val displayId: Int get() = virtualDisplay?.display?.displayId ?: -1
 
     /**
-     * 启动虚拟显示器（无需 MediaProjection，依赖 Shizuku shell 权限）
+     * 启动虚拟显示器
      *
-     * 内部步骤：
-     * 1. 校验 Shizuku 已授权（持有 MANAGE_DISPLAYS 系统级权限的前提）
-     * 2. NativeCapturer.setupNativeCapturer(w, h) 拿到承载画面的 Surface
-     * 3. DisplayServiceShizuku.createVirtualDisplay(name, w, h, dpi, surface)
-     *    通过 ShizukuBinderWrapper 调用 IDisplayManager.createVirtualDisplay
-     *
-     * @return 成功返回 Pair(surface, "")；失败返回 Pair(null, 详细错误文案)
+     * 步骤：
+     * 1. 校验 Shizuku 已授权
+     * 2. NativeCapturer.setupNativeCapturer(w, h) 拿到 Surface
+     * 3. DisplayManagerHelper.createVirtualDisplay(name, w, h, dpi, surface, flags)
+     *    用 DisplayManager 公开 API + Shizuku 包装的 binder 创建虚拟显示器
      */
     fun startVirtualDisplay(width: Int = DEFAULT_WIDTH,
                             height: Int = DEFAULT_HEIGHT): Pair<Surface?, String> {
-        if (capturer != null) {
+        if (virtualDisplay != null) {
             Log.w(TAG, "VirtualDisplay already running, stop first")
             return displaySurface to ""
         }
 
-        // 1. Shizuku 权限校验：先连接检测，再授权检测（拆分原因，精准报错）
+        // 1. Shizuku 权限校验
         if (!ShizukuManager.isShizukuConnected()) {
-            val msg = "虚拟显示器启动失败：Shizuku 服务未连接。请打开 Shizuku App 并通过 ADB/Root 启动服务。"
-            Log.e(TAG, "Shizuku not connected: $msg")
+            val msg = "Shizuku 服务未连接，请打开 Shizuku App 并通过 ADB 启动服务"
+            Log.e(TAG, msg)
             return null to msg
         }
         if (!ShizukuManager.isShizukuGranted()) {
-            val msg = "虚拟显示器启动失败：Shizuku 已连接但本 App 未获得权限。请回到首页，点击 Shizuku 卡片进行授权（会弹出授权确认框）。"
-            Log.e(TAG, "Shizuku not granted: $msg")
+            val msg = "Shizuku 未授权，请在设置页面点击授权按钮"
+            Log.e(TAG, msg)
             return null to msg
         }
 
@@ -154,40 +97,42 @@ class CompositionService {
             val cap = NativeCapturer()
             val surface = cap.setupNativeCapturer(width, height)
             if (surface == null) {
-                val msg = "虚拟显示器启动失败：Native 图像采集器初始化失败（setupNativeCapturer 返回 null）。请确认 minSdkVersion>=26 且 so 库已加载。"
+                val msg = "Native 图像采集器初始化失败，请确认 minSdkVersion>=26 且 so 库已加载"
                 Log.e(TAG, msg)
                 return null to msg
             }
             capturer = cap
             displaySurface = surface
 
-            // 3. 通过 Shizuku 调用 DisplayManager.createVirtualDisplay
-            //    （不弹窗、不需要用户确认；shell uid 已持有 MANAGE_DISPLAYS 权限）
-            val handle = DisplayServiceShizuku.createVirtualDisplay(
-                VIRTUAL_DISPLAY_NAME, width, height, DEFAULT_DPI, surface
+            // 3. 初始化 DisplayManagerHelper（替换 DisplayManagerGlobal 单例为 Shizuku 包装版本）
+            DisplayManagerHelper.init(context)
+
+            // 4. 用 DisplayManager 公开 API 创建虚拟显示器
+            val flags = DisplayManagerHelper.buildDisplayFlags()
+            val vd = DisplayManagerHelper.createVirtualDisplay(
+                context, VIRTUAL_DISPLAY_NAME, width, height, DEFAULT_DPI, surface, flags
             )
-            if (handle == null) {
-                val msg = "虚拟显示器启动失败：系统 DisplayManager.createVirtualDisplay 返回 null。可能原因：①ROM 定制移除了该接口 ②MANAGE_DISPLAYS 权限未生效（Shizuku shell uid 被降权） ③可用虚拟显示器槽位已满。详见 logcat 中 DisplayServiceShizuku 标签。"
+
+            if (vd == null) {
+                val msg = "虚拟显示器创建失败。可能原因：①Shizuku binder 包装失败 ②ROM 限制 ③槽位已满"
                 Log.e(TAG, msg)
-                // 回滚已分配的 Native 资源
                 cap.releaseNativeCapturer()
                 capturer = null
                 displaySurface = null
                 return null to msg
             }
-            virtualDisplayHandle = handle
+            virtualDisplay = vd
 
-            Log.i(TAG, "VirtualDisplay started: ${width}x${height} (via Shizuku)")
+            Log.i(TAG, "VirtualDisplay started: ${width}x${height} displayId=${vd.display?.displayId}")
             surface to ""
         } catch (e: Exception) {
-            val msg = "虚拟显示器启动失败：异常 ${e.javaClass.simpleName}: ${e.message}"
+            val msg = "虚拟显示器启动异常: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(TAG, msg, e)
-            // 异常回滚：防止资源泄漏
             try {
-                virtualDisplayHandle?.release()
+                virtualDisplay?.release()
                 capturer?.releaseNativeCapturer()
             } catch (_: Exception) {}
-            virtualDisplayHandle = null
+            virtualDisplay = null
             capturer = null
             displaySurface = null
             null to msg
@@ -195,75 +140,66 @@ class CompositionService {
     }
 
     /**
-     * 绑定预览 Surface（由 ViewModel 调用）
-     * Surface 销毁时调用 detachPreviewSurface
+     * 重启虚拟显示器并切换分辨率（横竖屏切换）
      */
+    fun restartVirtualDisplay(newWidth: Int, newHeight: Int): Pair<Surface?, String> {
+        if (newWidth == width && newHeight == height && virtualDisplay != null) {
+            Log.i(TAG, "restartVirtualDisplay skipped: size unchanged")
+            return displaySurface to ""
+        }
+
+        Log.i(TAG, "Restarting VirtualDisplay: ${width}x${height} -> ${newWidth}x${newHeight}")
+        val existingPreviewSurface = cachedPreviewSurface
+        stopVirtualDisplay()
+
+        val (newSurface, err) = startVirtualDisplay(newWidth, newHeight)
+        if (newSurface == null) {
+            Log.e(TAG, "restartVirtualDisplay failed: $err")
+            return null to err
+        }
+
+        if (existingPreviewSurface != null && existingPreviewSurface.isValid) {
+            attachPreviewSurface(existingPreviewSurface)
+            Log.i(TAG, "restartVirtualDisplay: re-attached preview surface")
+        }
+
+        return newSurface to ""
+    }
+
     fun attachPreviewSurface(surface: Surface?) {
         cachedPreviewSurface = surface
         capturer?.setPreviewSurface(surface)
         Log.i(TAG, "Preview surface attached: $surface")
     }
 
-    /**
-     * 解绑预览 Surface
-     */
     fun detachPreviewSurface() {
         cachedPreviewSurface = null
         capturer?.setPreviewSurface(null)
         Log.i(TAG, "Preview surface detached")
     }
 
-    /**
-     * 注入触摸按下事件（虚拟显示器坐标）
-     */
     fun injectTouchDown(x: Int, y: Int) {
-        // 通过 input 命令注入（需要 Shizuku 或 root 权限）
         ShellExecutor.execute("input tap $x $y", useShizuku = true, timeout = 2000)
     }
 
-    /**
-     * 注入触摸移动事件
-     */
     fun injectTouchMove(fromX: Int, fromY: Int, toX: Int, toY: Int) {
-        // input swipe 的 duration 控制滑动速度
-        ShellExecutor.execute(
-            "input swipe $fromX $fromY $toX $toY 100",
-            useShizuku = true,
-            timeout = 2000
-        )
+        ShellExecutor.execute("input swipe $fromX $fromY $toX $toY 100", useShizuku = true, timeout = 2000)
     }
 
-    /**
-     * 注入触摸抬起事件（input 命令模型中 tap/swipe 自动结束，这里空实现）
-     */
-    fun injectTouchUp(x: Int, y: Int) {
-        // input 命令本身是原子操作，无独立的 UP，可在此扩展 SendEvent 注入
-    }
+    fun injectTouchUp(x: Int, y: Int) {}
 
-    /**
-     * 获取当前帧 Bitmap 供识图引擎
-     */
     fun getFrameBufferBitmap(): Bitmap? = capturer?.getFrameBufferBitmap()
 
-    /**
-     * 获取已捕获帧数
-     */
     fun getFrameCount(): Long = capturer?.getFrameCount() ?: 0L
 
-    /**
-     * 停止虚拟显示器并释放所有资源（按创建顺序反向释放）
-     * 释放顺序：VirtualDisplay → NativeCapturer
-     */
     fun stopVirtualDisplay() {
-        // 1. 先释放 VirtualDisplay（停止屏幕画面投射）
         try {
-            virtualDisplayHandle?.release()
+            virtualDisplay?.release()
         } catch (e: Exception) {
             Log.e(TAG, "VirtualDisplay release failed", e)
         }
-        virtualDisplayHandle = null
+        virtualDisplay = null
 
-        // 2. 释放 Native 层资源（AImageReader / ANativeWindow）
         try {
             capturer?.releaseNativeCapturer()
         } catch (e: Exception) {
@@ -272,6 +208,6 @@ class CompositionService {
         capturer = null
         displaySurface = null
 
-        Log.i(TAG, "VirtualDisplay stopped (all resources released)")
+        Log.i(TAG, "VirtualDisplay stopped")
     }
 }

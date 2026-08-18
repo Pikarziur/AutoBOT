@@ -36,8 +36,8 @@ import java.util.Locale
  * 6. 管理任务执行模式选择（SH-ADB / 截图识别）和 SH 脚本任务列表
  *
  * 虚拟显示器创建路径：
- *   CompositionService → DisplayServiceShizuku → ShizukuBinderWrapper →
- *   IDisplayManager.createVirtualDisplay（shell uid 持有 MANAGE_DISPLAYS 权限）
+ *   CompositionService → DisplayManagerHelper → ShizukuBinderWrapper →
+ *   DisplayManager.createVirtualDisplay（shell uid 持有 MANAGE_DISPLAYS 权限）
  *   全程不弹窗、不需要用户运行时确认；前置条件仅为 Shizuku 已授权
  */
 class MonitorViewModel(application: Application) : AndroidViewModel(application) {
@@ -47,7 +47,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         private const val LOG_MAX_LINES = 500
     }
 
-    private val compositionService = CompositionService()
+    private val compositionService = CompositionService(application)
 
     /** 预览 Surface 状态：null 表示未绑定 */
     private val _previewSurface = MutableStateFlow<Surface?>(null)

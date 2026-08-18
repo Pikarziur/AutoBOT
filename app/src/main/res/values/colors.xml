@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ============ Material Design 白色主题色板 ============ -->
-    <!-- 背景与表面：纯白 -->
+    <!-- ============ MAA-Meow 风格色板（与 AutoBotTheme 对齐） ============ -->
+    <!-- 背景与表面：暖白 -->
     <color name="white">#FFFFFFFF</color>
-    <color name="background">#FFFFFF</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="surface_variant">#F5F5F5</color>
+    <color name="background">#FFF5F2ED</color>
+    <color name="surface">#FFF9F7F3</color>
+    <color name="surface_variant">#FFE8E4DE</color>
 
     <!-- 文字：黑色主文字 + 灰色辅助文字 -->
     <color name="black">#FF000000</color>
-    <color name="text_primary">#FF1A1A1A</color>
-    <color name="text_secondary">#FF757575</color>
-    <color name="text_hint">#FFBDBDBD</color>
+    <color name="text_primary">#FF1C1B18</color>
+    <color name="text_secondary">#FF8A8580</color>
+    <color name="text_hint">#FFC9C4BE</color>
 
     <!-- 强调蓝：着重提醒、显著文字、按钮 -->
-    <color name="primary">#FF2979FF</color>
-    <color name="primary_dark">#FF1E88E5</color>
-    <color name="primary_light">#FF42A5F5</color>
-    <color name="accent">#FF2979FF</color>
+    <color name="primary">#FF2B6BCA</color>
+    <color name="primary_dark">#FF1E55A8</color>
+    <color name="primary_light">#FFE5F1FF</color>
+    <color name="accent">#FF2B6BCA</color>
 
     <!-- 报错红：停止、关闭、错误信息 -->
-    <color name="error">#FFF44336</color>
+    <color name="error">#FFF53F3F</color>
 
     <!-- 成功绿（运行中状态） -->
     <color name="success">#FF4CAF50</color>
@@ -28,5 +28,5 @@
     <color name="warning">#FFFF9800</color>
 
     <!-- 分割线/边框 -->
-    <color name="outline">#FFE0E0E0</color>
+    <color name="outline">#FFC9C4BE</color>
 </resources>
