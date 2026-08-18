@@ -91,12 +91,27 @@ object DisplayServiceShizuku {
             //    API 33+ (Android 13+): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String, IBinder)
             //    API 28-32 (Android 9-12): createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, String)
             //    其他 ROM 定制变体：兜底遍历所有 createVirtualDisplay 重载
-            val iDisplayManagerClass = Class.forName("android.hardware.display.IDisplayManager")
-            val method = findCreateVirtualDisplayMethod(iDisplayManagerClass)
+            //
+            // 【MIUI / 隐藏 API 绕过修复】
+            // 原先使用接口类 IDisplayManager.class 会被 MIUI 的隐藏 API 过滤机制截断（只能看到 getDisplayInfo 一个方法）。
+            // 改用 iDisplayManager 的运行时类（IDisplayManager$Stub$Proxy，AIDL 自动生成的 Binder Proxy）
+            // 再 fallback 到接口类。Proxy 是编译器生成类，不走隐藏 API 黑名单，方法齐全。
+            val instanceClass: Class<*> = iDisplayManager.javaClass
+            val interfaceClass = runCatching { Class.forName("android.hardware.display.IDisplayManager") }.getOrNull()
+            var method = findCreateVirtualDisplayMethod(instanceClass)
+            val searchedClass: Class<*>
+            if (method != null) {
+                searchedClass = instanceClass
+            } else if (interfaceClass != null) {
+                method = findCreateVirtualDisplayMethod(interfaceClass)
+                searchedClass = interfaceClass
+            } else {
+                searchedClass = instanceClass
+            }
             if (method == null) {
-                Log.e(TAG, "No createVirtualDisplay method found. Available methods on IDisplayManager:")
-                // 诊断输出：打印所有方法，方便排查 ROM 改了什么签名
-                iDisplayManagerClass.declaredMethods.forEach { m ->
+                Log.e(TAG, "No createVirtualDisplay method found. Scanned classes: instance=${instanceClass.name}, interface=${interfaceClass?.name}")
+                Log.e(TAG, "Available methods on instance class (${instanceClass.name}):")
+                instanceClass.declaredMethods.forEach { m ->
                     Log.w(TAG, "  ${m.name}(${m.parameterTypes.joinToString { it.simpleName }})")
                 }
                 return null
