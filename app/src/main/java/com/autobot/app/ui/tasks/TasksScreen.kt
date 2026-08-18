@@ -28,7 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -63,7 +62,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.AppManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -88,7 +86,6 @@ fun TasksScreen(
 ) {
     val vm: MonitorViewModel = viewModel()
     val isRunning by vm.isRunning.collectAsStateWithLifecycle()
-    val frameCount by vm.frameCount.collectAsStateWithLifecycle()
     val displaySize by vm.displaySize.collectAsStateWithLifecycle()
     val executeMessage by vm.executeMessage.collectAsStateWithLifecycle()
 
@@ -124,14 +121,6 @@ fun TasksScreen(
             if (appInfo != null) {
                 taobaoIcon = appInfo.icon
             }
-        }
-    }
-
-    // 定时刷新帧计数
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(500)
-            vm.refreshFrameCount()
         }
     }
 
@@ -214,18 +203,6 @@ fun TasksScreen(
                                 }
                             }
                         }
-                    )
-
-                    // 状态信息（运行状态 + 帧数 + 分辨率方向）
-                    MonitorStatusCard(
-                        isRunning = isRunning,
-                        frameCount = frameCount,
-                        displaySize = displaySize,
-                        isLandscape = isLandscape,
-                        onToggleOrientation = { vm.toggleDisplayOrientation() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
                     )
                 }
             }
@@ -623,72 +600,6 @@ private fun TaobaoLauncherRow(
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
-        }
-    }
-}
-
-/**
- * 状态信息卡片
- */
-@Composable
-private fun MonitorStatusCard(
-    isRunning: Boolean,
-    frameCount: Long,
-    displaySize: Pair<Int, Int>,
-    isLandscape: Boolean,
-    onToggleOrientation: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val (w, h) = displaySize
-
-    Card(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text(
-                    text = if (isRunning) "运行中" else "未启动",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isRunning) Color(0xFF4CAF50)
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "帧: $frameCount",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = if (isLandscape) "横屏 ${w}x${h}" else "竖屏 ${w}x${h}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            IconButton(
-                onClick = onToggleOrientation,
-                modifier = Modifier
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        CircleShape
-                    )
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ScreenRotation,
-                    contentDescription = "切换横竖屏",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
         }
     }
 }
