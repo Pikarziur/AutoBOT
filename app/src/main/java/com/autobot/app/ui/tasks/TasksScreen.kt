@@ -95,6 +95,11 @@ fun TasksScreen(
     var isFullscreen by remember { mutableStateOf(false) }
     val isLandscape by vm.isLandscape.collectAsStateWithLifecycle()
 
+    // 同步本地 isFullscreen 状态到 ViewModel，供 Activity 观察后隐藏底部导航栏
+    LaunchedEffect(isFullscreen) {
+        vm.setFullscreen(isFullscreen)
+    }
+
     var isSurfaceAvailable by remember { mutableStateOf(false) }
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
 

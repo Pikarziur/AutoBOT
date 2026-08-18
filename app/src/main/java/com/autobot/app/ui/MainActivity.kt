@@ -4,14 +4,21 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.autobot.app.R
 import com.autobot.app.databinding.ActivityMainBinding
 import com.autobot.app.ui.settings.SettingsFragment
+import com.autobot.app.ui.tasks.MonitorViewModel
 import com.autobot.app.ui.tasks.TasksFragment
+import kotlinx.coroutines.launch
 
 /**
  * 主 Activity
@@ -52,6 +59,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         checkNotificationPermission()
+        observeFullscreenState()
     }
 
     /**
@@ -107,6 +115,22 @@ class MainActivity : AppCompatActivity() {
                     arrayOf(Manifest.permission.POST_NOTIFICATIONS),
                     NOTIFICATION_REQUEST_CODE
                 )
+            }
+        }
+    }
+
+    /**
+     * 观察全屏状态：全屏时隐藏底部导航栏，退出全屏时恢复
+     * 修复：FullscreenMonitor 在 Fragment 内，fillMaxSize 只填满 fragment_container，
+     *       无法覆盖 Activity 布局中的 BottomNavigationView → 需在 Activity 层隐藏
+     */
+    private fun observeFullscreenState() {
+        val viewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.isFullscreen.collect { fullscreen ->
+                    binding.navView.visibility = if (fullscreen) View.GONE else View.VISIBLE
+                }
             }
         }
     }
