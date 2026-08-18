@@ -26,4 +26,10 @@
         <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
     </style>
 
+    <!-- 底部导航文字样式：水平居中 -->
+    <style name="BottomNavText" parent="TextAppearance.Material3.Caption">
+        <item name="android:textAlignment">center</item>
+        <item name="android:gravity">center</item>
+    </style>
+
 </resources>
