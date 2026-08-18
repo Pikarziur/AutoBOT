@@ -4,7 +4,6 @@ import android.content.Context
 import android.hardware.display.VirtualDisplay
 import android.os.Build
 import android.os.IBinder
-import android.os.ServiceManager asSystemServiceManager
 import android.util.Log
 import android.view.Surface
 import rikka.shizuku.ShizukuBinderWrapper
