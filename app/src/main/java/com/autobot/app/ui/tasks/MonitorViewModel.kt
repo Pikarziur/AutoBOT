@@ -476,39 +476,24 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        // 3. 若 VD 尚未启动 → 用目标分辨率启动
-        if (!_isRunning.value) {
-            val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
-            if (errMsg.isBlank()) {
-                _displaySize.value = targetW to targetH
-                _isLandscape.value = compositionService.isLandscape
-                _isRunning.value = true
-                Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
-            } else {
-                val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
-                appendLog("[${stamp()}] ✗ $msg")
-                val r = false to msg
-                _executeMessage.value = r.second; return r
-            }
+        // 3. 每次点击都强制重启虚拟显示器（先停后启），确保干净环境
+        //    无论 VD 是否已运行、分辨率是否匹配，都先 stop 再 start
+        if (_isRunning.value) {
+            Log.i(TAG, "Force restart VD: stopping existing display before re-launch")
+            compositionService.stopVirtualDisplay()
+            _isRunning.value = false
+        }
+        val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
+        if (errMsg.isBlank()) {
+            _displaySize.value = targetW to targetH
+            _isLandscape.value = compositionService.isLandscape
+            _isRunning.value = true
+            Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
         } else {
-            // 4. 若 VD 已启动但分辨率不匹配 → 重建
-            val (curW, curH) = _displaySize.value
-            if (curW != targetW || curH != targetH) {
-                Log.i(TAG, "VD size mismatch: current ${curW}x${curH}, target ${targetW}x${targetH}, restarting…")
-                val (newSurface, errMsg) = compositionService.restartVirtualDisplay(targetW, targetH)
-                if (errMsg.isBlank()) {
-                    _displaySize.value = targetW to targetH
-                    _isLandscape.value = compositionService.isLandscape
-                } else {
-                    _isRunning.value = false
-                    val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
-                    appendLog("[${stamp()}] ✗ $msg")
-                    val r = false to msg
-                    _executeMessage.value = r.second; return r
-                }
-            } else {
-                Log.i(TAG, "VD size already matches ${targetW}x${targetH}, skip restart")
-            }
+            val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
+            appendLog("[${stamp()}] ✗ $msg")
+            val r = false to msg
+            _executeMessage.value = r.second; return r
         }
 
         // 5. 等待 displayId 可用（重建后 displayId 会变化，最多等待 800ms）
