@@ -267,8 +267,7 @@ private fun VirtualDisplayPreview(
         Card(
             modifier = Modifier
                 .width(cardWidth)
-                .height(cardHeight)
-                .clickable(onClick = onClick),
+                .height(cardHeight),
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
                 containerColor = Color.Black
@@ -309,7 +308,15 @@ private fun VirtualDisplayPreview(
                     }
                 }
 
-                // 右上角状态指示器
+                // ★ 透明可点击覆盖层：在 z-order 上高于 SurfaceView 和遮罩，
+                // 直接捕获点击事件，避免 AndroidView(SurfaceView) 拦截导致 Card.clickable 失效
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(onClick = onClick)
+                )
+
+                // 右上角状态指示器（在最上层，不消费点击事件）
                 val (dotColor, label) = when {
                     isRunning && isSurfaceAvailable -> {
                         Color(0xFF4CAF50) to "运行中"
