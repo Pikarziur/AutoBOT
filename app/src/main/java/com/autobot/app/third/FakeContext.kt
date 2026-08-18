@@ -7,13 +7,17 @@ import android.content.ClipboardManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.IContentProvider
 import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.Build
 import android.os.Process
 import android.util.Log
 import java.lang.reflect.Field
+
+// 注意：不直接 import android.content.IContentProvider —— 它是 @hide 接口，
+// 在标准 Android SDK（compileSdk=34）中不可见，直接 import 会触发
+// "Unresolved reference: IContentProvider" 编译错误。
+// ShellContentResolver 内部使用 Any? 类型 + 反射方式处理 Provider 实例。
 
 /**
  * 伪装 shell 身份的 Context 包装器（完全对齐 MAA-Meow/scrcpy 的 FakeContext.java）。
@@ -59,9 +63,12 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
 
     private class ShellContentResolver(context: Context) : ContentResolver(context) {
 
+        // 注意：acquireProvider 等方法的返回类型在父类 ContentResolver 中是
+        // 隐藏的 IContentProvider，标准 SDK 不可见，因此用 Any? 兜底，运行时
+        // 通过反射取 holder.provider 字段（类型为 IContentProvider）即可。
         @Suppress("unused", "ProtectedMemberInFinalClass")
         // @Override（super 方法隐藏，编译期不可见）
-        protected fun acquireProvider(c: Context, name: String): IContentProvider? {
+        protected fun acquireProvider(c: Context, name: String): Any? {
             // 通过 ActivityManager.getContentProviderExternal(name, new Binder())
             // 对应的 AIDL 调用在 shell UID 下是允许的
             return try {
@@ -79,7 +86,7 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
                     ?: return null
                 val providerField = holder.javaClass.getDeclaredField("provider")
                 providerField.isAccessible = true
-                providerField.get(holder) as? IContentProvider
+                providerField.get(holder)
             } catch (e: Exception) {
                 Log.w(TAG, "ShellContentResolver.acquireProvider($name) failed", e)
                 null
@@ -87,16 +94,16 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
         }
 
         @Suppress("unused")
-        fun releaseProvider(icp: IContentProvider?): Boolean = false
+        fun releaseProvider(icp: Any?): Boolean = false
 
         @Suppress("unused", "ProtectedMemberInFinalClass")
-        protected fun acquireUnstableProvider(c: Context, name: String): IContentProvider? = null
+        protected fun acquireUnstableProvider(c: Context, name: String): Any? = null
 
         @Suppress("unused")
-        fun releaseUnstableProvider(icp: IContentProvider?): Boolean = false
+        fun releaseUnstableProvider(icp: Any?): Boolean = false
 
         @Suppress("unused")
-        fun unstableProviderDied(icp: IContentProvider?) { /* ignore */ }
+        fun unstableProviderDied(icp: Any?) { /* ignore */ }
     }
 
     // ---- 新增：getSystemService 特殊处理 ----

@@ -1,13 +1,18 @@
 package com.autobot.app.third
 
 import android.content.Context
-import android.hardware.display.DisplayManagerGlobal
 import android.hardware.display.VirtualDisplay
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import rikka.shizuku.ShizukuBinderWrapper
+
+// 注意：不直接 import android.hardware.display.DisplayManagerGlobal —— 它是 @hide 类，
+// 在标准 Android SDK（compileSdk=34）中不可见，直接 import 会触发
+// "Unresolved reference: DisplayManagerGlobal" 编译错误。
+// 本文件全程通过 Class.forName("android.hardware.display.DisplayManagerGlobal")
+// 反射访问，不需要编译期符号。
 
 /**
  * 通过 Shizuku 创建虚拟显示器的核心 Helper（参照 MAA-Meow + scrcpy 架构加固）。
@@ -94,17 +99,18 @@ object DisplayManagerHelper {
         // Step 3: IDisplayManager.Stub.asInterface(wrappedBinder)
         // 注意：MIUI 等 ROM 的隐藏 API 过滤会拦截 IDisplayManager$Stub，
         // 所以优先在运行时类（$Stub$Proxy）上查 asInterface，而不是在接口类上。
+        // 字符串字面量中 $ 是 Kotlin 模板插值符，必须用 \$ 转义为字面美元符号，
+        // 否则 "$Stub" 会被当成变量引用而报 "Unresolved reference: Stub"。
+        val stubClassName = "android.hardware.display.IDisplayManager" + "\$" + "Stub"
+        val proxyClassName = stubClassName + "\$" + "Proxy"
         val iDisplayManager = try {
-            val stubClass = Class.forName("android.hardware.display.IDisplayManager\$Stub")
+            val stubClass = Class.forName(stubClassName)
             val asInterface = stubClass.getMethod("asInterface", IBinder::class.java)
             asInterface.invoke(null, wrappedBinder)
         } catch (stubEx: Exception) {
-            Log.w(TAG, "PathA step3 IDisplayManager\\$Stub approach blocked by MIUI, fallback to runtime Proxy class", stubEx)
+            Log.w(TAG, "PathA step3 IDisplayManager\$Stub approach blocked by MIUI, fallback to runtime Proxy class", stubEx)
             var result: Any? = null
-            for (candidateClass in arrayOf(
-                "android.hardware.display.IDisplayManager\$Stub\$Proxy",
-                "android.hardware.display.IDisplayManager\$Stub"
-            )) {
+            for (candidateClass in arrayOf(proxyClassName, stubClassName)) {
                 try {
                     val c = Class.forName(candidateClass)
                     val m = c.getMethod("asInterface", IBinder::class.java)
