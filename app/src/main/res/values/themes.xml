@@ -33,7 +33,8 @@
     </style>
 
     <!-- 底部导航选中指示器：透明背景，去掉默认的圆角药丸色块 -->
-    <style name="BottomNavActiveIndicator" parent="Widget.Material3.NavigationBarView.ActiveIndicator">
+    <!-- 不继承父样式：避免不同 Material 库版本下父样式名不一致导致的 AAPT 找不到资源错误 -->
+    <style name="BottomNavActiveIndicator">
         <item name="android:background">@android:color/transparent</item>
         <item name="backgroundTint">@android:color/transparent</item>
     </style>
