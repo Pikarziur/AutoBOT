@@ -32,4 +32,10 @@
         <item name="android:gravity">center</item>
     </style>
 
+    <!-- 底部导航选中指示器：透明背景，去掉默认的圆角药丸色块 -->
+    <style name="BottomNavActiveIndicator" parent="Widget.Material3.NavigationBarView.ActiveIndicator">
+        <item name="android:background">@android:color/transparent</item>
+        <item name="backgroundTint">@android:color/transparent</item>
+    </style>
+
 </resources>

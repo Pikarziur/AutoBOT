@@ -1,12 +1,18 @@
 package com.autobot.app.ui.settings
 
+import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.util.DisplayMetrics
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -238,6 +245,8 @@ private fun SettingsScreen(
                 onOpenShizukuClick = onOpenShizukuClick
             )
 
+            DeviceInfoCard()
+
             AboutCard(versionName = versionName)
         }
     }
@@ -307,6 +316,147 @@ private fun ShizukuCard(
             }
         }
     }
+}
+
+/**
+ * 关于卡片：设备型号 / 系统版本 / 屏幕分辨率（横线表格）
+ *
+ * 自动读取 Build 与 WindowManager 真实分辨率；用横向分隔线模拟表格行边界。
+ * 与现有 ShizukuCard / AboutCard 样式保持一致（0 阴影 12dp 圆角 surface 底色）。
+ */
+@Composable
+private fun DeviceInfoCard() {
+    val context = LocalContext.current
+
+    // 设备型号：厂商 + 型号（厂商首字母大写，避免小写 "xiaomi" 看着突兀）
+    val deviceModel = remember {
+        val manufacturer = Build.MANUFACTURER ?: ""
+        val model = Build.MODEL ?: ""
+        if (manufacturer.isBlank()) {
+            model
+        } else {
+            // 厂商首字母大写，避免小写 "xiaomi" 看着突兀
+            val cap = manufacturer.replaceFirstChar { 
+                if (it.isLowerCase()) it.uppercaseChar() else it 
+            }
+            // 去重：部分机型 model 已包含厂商名（如 "Xiaomi 23049PCD"），避免 "Xiaomi Xiaomi..."
+            if (model.equals(manufacturer, ignoreCase = true) || model.startsWith(manufacturer, ignoreCase = true)) {
+                model
+            } else {
+                "$cap $model"
+            }
+        }
+    }
+
+    // 系统版本：Android {release} (API {sdk})
+    val osVersion = remember {
+        val release = Build.VERSION.RELEASE ?: "未知"
+        val sdk = Build.VERSION.SDK_INT
+        "Android $release (API $sdk)"
+    }
+
+    // 屏幕分辨率：取真实物理像素（getRealMetrics 包含状态栏/导航栏区域）
+    val screenResolution = remember {
+        var w = 0
+        var h = 0
+        try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            wm?.let {
+                val metrics = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                it.defaultDisplay.getRealMetrics(metrics)
+                w = metrics.widthPixels
+                h = metrics.heightPixels
+            }
+        } catch (_: Exception) {
+            // 极个别 ROM 取不到真实分辨率时，回退到资源 displayMetrics
+            val dm = context.resources.displayMetrics
+            w = dm.widthPixels
+            h = dm.heightPixels
+        }
+        if (w > 0 && h > 0) "$w × $h" else "未知"
+    }
+
+    // 分隔线颜色：与 outline 资源 (#C9C4BE) 对齐，但用 colorScheme 适配主题
+    val dividerColor = MaterialTheme.colorScheme.outlineVariant
+        .copy(alpha = 0.6f)
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // 表格标题：关于（黑色 17sp SemiBold，与 AboutCard 应用名同规格）
+            Text(
+                text = "关于",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp)
+            )
+            TableDivider(color = dividerColor)
+
+            // 表格行：设备型号 / 系统版本 / 屏幕分辨率
+            TableRow(label = "设备型号", value = deviceModel, dividerColor = dividerColor)
+            TableRow(label = "系统版本", value = osVersion, dividerColor = dividerColor)
+            TableRow(label = "屏幕分辨率", value = screenResolution, isLast = true)
+        }
+    }
+}
+
+/**
+ * 表格行：左侧标签（灰色 13sp）+ 右侧值（黑色 14sp），SpaceBetween 布局，带底部横线
+ *
+ * @param isLast 最后一行不绘制底部分隔线，避免与卡片底边形成双线
+ */
+@Composable
+private fun TableRow(
+    label: String,
+    value: String,
+    dividerColor: Color = Color.Transparent,
+    isLast: Boolean = false
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(start = 12.dp)
+            )
+        }
+        if (!isLast) {
+            TableDivider(color = dividerColor)
+        }
+    }
+}
+
+/**
+ * 表格横线：1dp 高，左右各留 16dp 内边距，避免触到卡片边缘
+ */
+@Composable
+private fun TableDivider(color: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .height(1.dp)
+            .background(color = color)
+    )
 }
 
 /**
