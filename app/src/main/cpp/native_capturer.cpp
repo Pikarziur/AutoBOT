@@ -419,11 +419,168 @@ static jlong JNICALL native_getFrameCount(JNIEnv* /*env*/, jobject /*thiz*/) {
 }
 
 // ============================================================================
+// 新架构（Server 进程传 JPEG 帧到 App 注入）所需方法
+// ============================================================================
+
+/**
+ * 仅分配 frameBuffer，不创建 AImageReader（Server 端负责画面采集）。
+ * JNI 签名对应 Kotlin: fun prepareFrameBuffer(width: Int, height: Int): Boolean
+ */
+static jboolean JNICALL native_prepareFrameBuffer(JNIEnv* env, jobject thiz,
+                                                  jint width, jint height) {
+    LOGI("prepareFrameBuffer: %dx%d", width, height);
+
+    std::lock_guard<std::mutex> lk(g_ctxMutex);
+    if (g_ctx != nullptr) {
+        LOGW("Capturer already exists, releasing old one first");
+        // 此处不调用 release（需要 JNIEnv 清理 GlobalRef），返回失败让调用方 stop 再 start
+        return JNI_FALSE;
+    }
+
+    if (width <= 0 || height <= 0) {
+        LOGE("Invalid dimensions: %dx%d", width, height);
+        return JNI_FALSE;
+    }
+
+    g_ctx = new CapturerContext();
+    g_ctx->width    = width;
+    g_ctx->height   = height;
+    g_ctx->released = false;
+    g_ctx->fbWidth  = width;
+    g_ctx->fbHeight = height;
+    env->GetJavaVM(&g_ctx->jvm);
+    g_ctx->javaRef  = env->NewGlobalRef(thiz);
+
+    // 预分配 frameBuffer（RGBA_8888 = w*h*4 bytes）
+    try {
+        std::lock_guard<std::mutex> lk2(g_ctx->fbMutex);
+        g_ctx->frameBuffer.resize((size_t)width * height * 4, 0);
+    } catch (const std::bad_alloc& e) {
+        LOGE("frameBuffer allocation failed: %s", e.what());
+        env->DeleteGlobalRef(g_ctx->javaRef);
+        delete g_ctx; g_ctx = nullptr;
+        return JNI_FALSE;
+    }
+
+    LOGI("prepareFrameBuffer success: frameBuffer=%zu bytes", g_ctx->frameBuffer.size());
+    return JNI_TRUE;
+}
+
+/**
+ * 从 Bitmap（JPEG 解码后的 ARGB_8888）写入 frameBuffer + 可选分发预览 + 自增 frameCount。
+ * JNI 签名对应 Kotlin: fun injectExternalFrame(bitmap: Bitmap)
+ */
+static void JNICALL native_injectExternalFrame(JNIEnv* env, jobject /*thiz*/, jobject bitmap) {
+    if (g_ctx == nullptr || g_ctx->released.load() || bitmap == nullptr) return;
+
+    AndroidBitmapInfo info;
+    int ret = AndroidBitmap_getInfo(env, bitmap, &info);
+    if (ret < 0) {
+        LOGE("AndroidBitmap_getInfo failed: %d", ret);
+        return;
+    }
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        // 仅支持 ARGB_8888（JPEG 经 BitmapFactory.decodeByteArray 默认产出）
+        LOGW("injectExternalFrame: unsupported format=%d, expect RGBA_8888(%d)",
+             info.format, ANDROID_BITMAP_FORMAT_RGBA_8888);
+        return;
+    }
+
+    void* pixels = nullptr;
+    ret = AndroidBitmap_lockPixels(env, bitmap, &pixels);
+    if (ret < 0 || pixels == nullptr) {
+        LOGE("AndroidBitmap_lockPixels failed: %d", ret);
+        return;
+    }
+
+    const int w = (int)info.width;
+    const int h = (int)info.height;
+
+    // ---- 1. 写入帧缓冲 ----
+    {
+        std::lock_guard<std::mutex> lk(g_ctx->fbMutex);
+        size_t need = (size_t)w * h * 4;
+        if (g_ctx->frameBuffer.size() < need) {
+            try {
+                g_ctx->frameBuffer.resize(need, 0);
+            } catch (const std::bad_alloc& e) {
+                LOGE("injectExternalFrame resize failed: %s", e.what());
+                AndroidBitmap_unlockPixels(env, bitmap);
+                return;
+            }
+        }
+        g_ctx->fbWidth  = w;
+        g_ctx->fbHeight = h;
+        // 同步 ctx 宽高（预览 blit 用 g_ctx->width/height）
+        g_ctx->width  = w;
+        g_ctx->height = h;
+
+        uint8_t*       src = (uint8_t*)pixels;
+        uint8_t*       dst = g_ctx->frameBuffer.data();
+        const uint32_t srcStride = info.stride;
+
+        if (srcStride == (uint32_t)(w * 4)) {
+            // 行对齐完美，直接整块拷贝
+            // 注意：ARGB_8888 Bitmap 的内存字节序与 frameBuffer 的 RGBA 约定一致
+            // （小端 ARM 下 0xAARRGGBB 在内存中按 byte[0]=R byte[1]=G byte[2]=B byte[3]=A 排布，
+            //  与 AImageReader RGBA plane 完全相同 → getFrameBufferBitmap 里也直接 memcpy）
+            memcpy(dst, src, need);
+        } else {
+            // stride 不一致：按行拷贝去掉 padding
+            const int rowBytes = w * 4;
+            for (int y = 0; y < h; y++) {
+                memcpy(dst + y * rowBytes,
+                       src + y * srcStride,
+                       (size_t)rowBytes);
+            }
+        }
+    }
+
+    AndroidBitmap_unlockPixels(env, bitmap);
+
+    // ---- 2. 分发预览（若 previewWindow 已设置）----
+    {
+        std::lock_guard<std::mutex> lk(g_ctx->previewMutex);
+        if (g_ctx->previewWindow != nullptr) {
+            ANativeWindow* pw = g_ctx->previewWindow;
+            ANativeWindow_setBuffersGeometry(pw, w, h,
+                                             AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+            ANativeWindow_Buffer buf;
+            if (ANativeWindow_lock(pw, &buf, nullptr) == 0) {
+                std::lock_guard<std::mutex> lk2(g_ctx->fbMutex);
+                uint8_t* src = g_ctx->frameBuffer.data();
+                if (src != nullptr && buf.bits != nullptr) {
+                    uint8_t* dst = (uint8_t*)buf.bits;
+                    const int rowBytes = w * 4;
+                    if (buf.stride == w) {
+                        memcpy(dst, src, (size_t)rowBytes * h);
+                    } else {
+                        for (int y = 0; y < h; y++) {
+                            memcpy(dst + y * buf.stride * 4,
+                                   src + y * rowBytes,
+                                   (size_t)rowBytes);
+                        }
+                    }
+                }
+                ANativeWindow_unlockAndPost(pw);
+            }
+        }
+    }
+
+    // ---- 3. 自增帧计数 ----
+    g_ctx->frameCount.fetch_add(1);
+}
+
+// ============================================================================
 // RegisterNatives 表
 // ============================================================================
 static const JNINativeMethod kNativeMethods[] = {
         {"setupNativeCapturer",   "(II)Landroid/view/Surface;",
          (void*)native_setupCapturer},
+        {"prepareFrameBuffer",    "(II)Z",
+         (void*)native_prepareFrameBuffer},
+        {"injectExternalFrame",   "(Landroid/graphics/Bitmap;)V",
+         (void*)native_injectExternalFrame},
         {"releaseNativeCapturer", "()V",
          (void*)native_releaseCapturer},
         {"setPreviewSurface",     "(Landroid/view/Surface;)V",

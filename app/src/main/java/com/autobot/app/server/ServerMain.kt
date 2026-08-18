@@ -1,288 +1,365 @@
 package com.autobot.app.server
 
+import android.graphics.Bitmap
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.hardware.display.VirtualDisplay
+import android.media.Image
+import android.media.ImageReader
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.LocalSocketAddress.Namespace
-import android.os.Parcel
 import android.os.Process
 import android.util.Log
-import android.view.Surface
 import com.autobot.app.third.DisplayManagerHelper
 import com.autobot.app.third.FakeContext
 import com.autobot.app.third.Workarounds
-import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
 /**
- * Server 进程入口（通过 Shizuku.newProcess 启动的独立 app_process，shell uid）。
+ * Server 进程入口（Shizuku.newProcess 启动的 shell uid app_process）
  *
- * 调用形式：
- *   app_process -Djava.class.path=/data/local/tmp/autobot-server.apk / com.autobot.app.server.ServerMain <socketName>
+ * 架构（scrcpy/MAA-Meow 同款数据流方向）：
+ *   App 进程创建 socket，ShizukuProcessManager.launchServer → 我们的 main() 被 app_process 调用
+ *     1. 连到 App 进程的 LocalServerSocket("com.autobot.app.vdserver")
+ *     2. 读 MSG_CREATE_VD(w,h,density,flags,name,jpegQuality,maxFps)
+ *     3. Workarounds.apply() + FakeContext.get()（补 app_process 缺的 ActivityThread）
+ *     4. ImageReader.newInstance(w,h,YUV_420_888, maxImages=3) 拿 Surface
+ *        → 这 Surface 是 VD 输出端，**不需要跨进程！** 直接拿来 createVirtualDisplay
+ *     5. onImageAvailable → acquireLatestImage → YUV_420_888 planes → 压缩 JPEG q=90
+ *        → FramePacket(w,h,jpegBytes,frameIndex) → writeMessage(MSG_FRAME) → socket
+ *     6. 运行中循环：PING→PONG / RELEASE_VD→释放→RESP / socket 异常→退出
  *
- * 主流程：
- *   1. 从 args 拿 socketName，连到 App 进程预先创建的 LocalServerSocket
- *   2. 读 MSG_CREATE_VD（含 Surface Parcel 跨进程序列化数据）
- *   3. Workarounds.apply() 注入 ActivityThread（app_process 默认没有）
- *   4. FakeContext.get() 拿 com.android.shell 身份的 Context
- *   5. 反序列化 Surface，调 DisplayManagerHelper.createVirtualDisplay(surface,...)
- *      —— server 进程是 shell uid，系统侧 callingUid 校验自然通过
- *   6. 回写 MSG_CREATE_VD_RESP（displayId 或 错误消息）
- *   7. 进入 keepAlive 循环：5s 一次 PING/PONG；RELEASE_VD → release VD + exit；
- *      socket 断连 → release VD + exit（防止 App 死掉后 VD 残留）
+ * 修复 Parcel.marshall 失败的关键点：
+ *   不再接收 App 端 Surface Parcel（因为 Parcel.marshall() 不能处理 Surface 里的
+ *   IGraphicBufferProducer Binder）。server 端同时持有 VD creator + VD consumer 两端，
+ *   完全绕开 Surface 跨进程传递死胡同。
  *
- * 重要约束：
- *  - server 进程不在 App 的 JVM 中，**不能依赖** AndroidX / Kotlinx / App 业务类
- *    只能用 Android 框架 + Kotlin stdlib + Workarounds/FakeContext/DisplayManagerHelper
- *    （这些类都编入了 classes.dex，通过 -Djava.class.path 加载）
- *  - 异常必须捕获后通过 MSG_CREATE_VD_RESP.error 反馈给 App，不能让 server 进程静默崩溃
+ * server 端自己读帧也有额外好处：
+ *   - 不需要在独立进程加载 libautobot_native.so（不用处理 JNI class 路径注册问题）
+ *   - 全部用 Java/Kotlin 标准 API（minSdk=26 都覆盖 ImageReader/YuvImage/BitmapFactory）
+ *   - 崩溃栈更容易在 [server.err] 日志中读出来
  */
 object ServerMain {
 
     private const val TAG = "ServerMain"
-
-    /** 默认 socket 名（与 CompositionService 创建的 LocalServerSocket 一致） */
     private const val DEFAULT_SOCKET_NAME = "com.autobot.app.vdserver"
 
-    /** 心跳间隔（毫秒）：5 秒一次 PING */
-    private const val PING_INTERVAL_MS = 5_000L
+    /** 最大 ImageReader 缓冲帧数：3 足够 30fps 不丢帧 */
+    private const val MAX_IMAGES = 3
 
-    /** 心跳超时（毫秒）：15 秒没收到 PONG 视为 App 已死 */
-    private const val PONG_TIMEOUT_MS = 15_000L
+    /** MSG_FRAME 节流：收到的 ACK 数量 / 发送的帧数量 简单节流 */
+    @Volatile private var ackCounter = 0L
+    @Volatile private var frameIndex = 0L
+    @Volatile private var maxFps = 30
+    @Volatile private var jpegQuality = 90
+    @Volatile private var heldVd: VirtualDisplay? = null
+    @Volatile private var heldReader: ImageReader? = null
+    @Volatile private var running = true
 
-    /** 持有的 VirtualDisplay（释放时调 release） */
-    @Volatile
-    private var heldVd: VirtualDisplay? = null
-
-    /** 持有的 Surface（释放时调 release） */
-    @Volatile
-    private var heldSurface: Surface? = null
-
-    /** socket 是否还活着（控制 keepAlive 循环退出） */
-    @Volatile
-    private var running = true
-
-    /**
-     * server 进程入口（app_process -Djava.class.path=... / ServerMain <socketName>）
-     *
-     * 注意：用 @JvmStatic 保证 Kotlin object 的方法是真正的 static void main(String[])，
-     * 这样 app_process 才能找到入口（app_process 找的是 main(String[])）。
-     */
     @JvmStatic
     fun main(args: Array<String>) {
         val socketName = args.getOrElse(0) { DEFAULT_SOCKET_NAME }
-        Log.i(TAG, "🚀 ServerMain start: socket=$socketName pid=${Process.myPid()} uid=${Process.myUid()}")
+        Log.i(TAG, "🚀 start socket=$socketName pid=${Process.myPid()} uid=${Process.myUid()}")
 
         val socket = LocalSocket()
         try {
-            // 1. 连接 App 进程的 LocalServerSocket
             socket.connect(LocalSocketAddress(socketName, Namespace.ABSTRACT))
             Log.i(TAG, "Connected to LocalSocket: $socketName")
-
             val input = socket.inputStream
             val out = socket.outputStream
 
-            // 2. 阻塞读 CREATE_VD（第一条消息必须是 CREATE_VD）
+            // 首条消息必须是 CREATE_VD
             val (msgType, payload) = try {
                 VDProtocol.readMessage(input)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to read first message", e)
+                Log.e(TAG, "Read first msg failed", e)
                 writeResp(out, ok = false, displayId = -1,
-                    error = "Server 读消息失败: ${e.javaClass.simpleName}: ${e.message}")
+                    "Server 读首条消息失败: ${e.javaClass.simpleName}: ${e.message}")
                 return
             }
-
             if (msgType != VDProtocol.MSG_CREATE_VD) {
-                Log.e(TAG, "Unexpected first msg type=$msgType (expected CREATE_VD)")
-                writeResp(out, ok = false, displayId = -1,
-                    error = "Server 收到的首条消息类型不对: type=$msgType")
+                writeResp(out, ok = false, displayId = -1, "首条消息类型不对: $msgType")
                 return
             }
 
-            // 3-6. 处理 CREATE_VD（内部会写 MSG_CREATE_VD_RESP）
-            handleCreateVd(payload, out)
-
-            // 7. 如果 VD 创建成功 → 进入心跳保活循环
-            if (heldVd != null) {
-                runKeepAliveLoop(input, out)
-            } else {
-                Log.w(TAG, "VD not created, skipping keepAlive loop")
+            val (vdCreated, readerCreated) = handleCreateVd(payload, out)
+            if (!vdCreated || readerCreated == null) {
+                return  // handleCreateVd 里已经写了 MSG_CREATE_VD_RESP（含失败错误）
             }
 
-        } catch (e: Throwable) {
-            Log.e(TAG, "ServerMain fatal", e)
+            // VD 创建成功：进入 keepAlive 循环
+            runKeepAliveLoop(input, out, readerCreated)
+
+        } catch (t: Throwable) {
+            Log.e(TAG, "ServerMain fatal", t)
         } finally {
-            Log.i(TAG, "ServerMain exit, releasing VD if any")
-            releaseVd()
+            Log.i(TAG, "ServerMain exit, releasing VD/ImageReader")
+            releaseAll()
             try { socket.close() } catch (_: Exception) {}
             running = false
         }
     }
 
     /**
-     * 处理 CREATE_VD 请求：反序列化 Surface + Workarounds + FakeContext + 调 createVirtualDisplay
-     * 然后回写 MSG_CREATE_VD_RESP。
+     * 处理 CREATE_VD：
+     *   - 反序列化 VDRequest → w/h/density/flags/name/jpegQuality/maxFps
+     *   - Workarounds.apply + FakeContext
+     *   - 反射 DisplayManager(Context) + createVirtualDisplay(name,w,h,dpi,surface,flags)
+     *   - 新：ImageReader.newInstance(w,h,YUV_420_888,MAX_IMAGES)
+     *   - 新：onImageAvailableListener 监听 new image → compress JPEG → MSG_FRAME
+     *
+     * @return Pair<vdCreated: Boolean, readerCreated: ImageReader?>
      */
-    private fun handleCreateVd(payload: ByteArray, out: OutputStream) {
+    private fun handleCreateVd(payload: ByteArray, out: OutputStream): Pair<Boolean, ImageReader?> {
         try {
             val req = VDRequest.fromByteArray(payload)
-            Log.i(TAG, "CREATE_VD: ${req.width}x${req.height} dpi=${req.density} flags=0x${req.flags.toString(16)} name=${req.name} surfaceBytes=${req.surfaceBytes.size}")
+            Log.i(TAG, "CREATE_VD: ${req.width}x${req.height} dpi=${req.density} flags=0x${req.flags.toString(16)} " +
+                    "name=${req.name} jpegQ=${req.jpegQuality} maxFps=${req.maxFps}")
+            jpegQuality = req.jpegQuality.coerceIn(1, 100)
+            maxFps = req.maxFps.coerceIn(1, 60)
 
-            // Step 3: Workarounds.apply() —— app_process 没有 ActivityThread，必须注入
+            // 3: Workarounds.apply（app_process 没有 ActivityThread，必须注入；Samsung/MIUI 要求 Android 12+）
             try {
                 Workarounds.apply()
                 Log.i(TAG, "✅ Workarounds.apply() OK")
             } catch (t: Throwable) {
                 Log.w(TAG, "Workarounds.apply() failed (continuing with FakeContext fallback)", t)
-                // 不直接 return，让 FakeContext.get() 内部兜底
             }
 
-            // Step 4: FakeContext —— 返回 com.android.shell 身份的 Context
-            val fakeContext = FakeContext.get()
-            Log.i(TAG, "✅ FakeContext.get() OK: packageName=${fakeContext.packageName}")
+            // 4: FakeContext
+            val fakeCtx = FakeContext.get()
+            Log.i(TAG, "✅ FakeContext OK: pkg=${fakeCtx.packageName}")
 
-            // Step 5: 反序列化 Surface（App 进程用 surface.writeToParcel 序列化）
-            val surface = unmarshallSurface(req.surfaceBytes)
-                ?: run {
-                    writeResp(out, ok = false, displayId = -1,
-                        error = "Surface 反序列化失败（surfaceBytes.size=${req.surfaceBytes.size}）")
-                    return
-                }
-            heldSurface = surface
-            Log.i(TAG, "✅ Surface unmarshalled: $surface")
+            // 5: ImageReader（server 端自产自销：生产端是 VD，消费端是 onImageAvailable 读帧）
+            Log.i(TAG, "ImageReader.newInstance(w=${req.width}, h=${req.height}, fmt=YUV_420_888, maxImages=$MAX_IMAGES) ...")
+            val reader = ImageReader.newInstance(req.width, req.height, ImageFormat.YUV_420_888, MAX_IMAGES)
+            Log.i(TAG, "✅ ImageReader OK: surface=${reader.surface}")
 
-            // Step 6: 创建 VirtualDisplay
-            // server 进程是 shell uid，createVirtualDisplay 调用链上 callingUid=SHELL_UID，
-            // system_server 不会拒绝。
+            // 6: createVirtualDisplay（直接把 ImageReader.surface 给 VD 当输出，不需要跨进程！）
             val vd = DisplayManagerHelper.createVirtualDisplay(
-                surface = surface,
+                surface = reader.surface,
                 name = req.name,
                 width = req.width,
                 height = req.height,
                 density = req.density,
                 flags = req.flags
             )
-
             if (vd == null) {
                 writeResp(out, ok = false, displayId = -1,
-                    error = "DisplayManagerHelper.createVirtualDisplay 返回 null（详见 logcat DisplayMgrHelper 标签）")
-                return
+                    "DisplayManagerHelper.createVirtualDisplay 返回 null（详见 logcat DisplayMgrHelper 标签）")
+                try { reader.close() } catch (_: Exception) {}
+                return false to null
             }
-
             heldVd = vd
+            heldReader = reader
             val displayId = vd.display?.displayId ?: -1
-            Log.i(TAG, "✅ VirtualDisplay created, displayId=$displayId")
+            Log.i(TAG, "✅ VD created, displayId=$displayId")
+
+            // 7: 注册 ImageReader.onImageAvailableListener
+            val outSocket = out  // val capture for listener
+            val minSendIntervalNs = 1_000_000_000L / maxFps // 30fps ≈ 33ms
+            reader.setOnImageAvailableListener({ r ->
+                trySendFrame(r, outSocket, minSendIntervalNs)
+            }, null)  // handler=null → 用当前线程的 Looper？
+            // 注意：ImageReader.setOnImageAvailableListener 若 handler 为 null 会用当前线程的 Looper。
+            // main() 所在线程没有 Looper；onImageAvailable 不会触发！这是个大 BUG。
+            // 修复：在单独 Looper 线程注册 listener。
+            reader.setOnImageAvailableListener(null, null) // 先清掉之前的
+            startImageListenerThread(reader, outSocket, minSendIntervalNs)
 
             writeResp(out, ok = true, displayId = displayId, error = "")
+            return true to reader
 
         } catch (t: Throwable) {
             Log.e(TAG, "handleCreateVd exception", t)
-            // 把根因挖出来，便于 App 端展示给用户
             var cause: Throwable? = t
             while (cause?.cause != null && cause.cause !== cause) cause = cause.cause
-            val detail = if (cause != null && cause !== t) {
-                "（根因：${cause.javaClass.simpleName}: ${cause.message}）"
-            } else ""
+            val detail = if (cause != null && cause !== t) "（根因：${cause.javaClass.simpleName}: ${cause.message}）" else ""
             writeResp(out, ok = false, displayId = -1,
-                error = "Server 处理 CREATE_VD 异常: ${t.javaClass.simpleName}: ${t.message} $detail")
+                "Server CREATE_VD 异常: ${t.javaClass.simpleName}: ${t.message} $detail")
+            return false to null
         }
     }
 
     /**
-     * 反序列化 Surface（App 端用 surface.writeToParcel + parcel.marshall）
+     * 为 ImageReader 启动一个带 Looper 的 HandlerThread，保证 onImageAvailable 被调用。
+     * 如果 handler=null，ImageReader 会尝试用当前线程 Looper，没有就静默丢回调。
      */
-    private fun unmarshallSurface(surfaceBytes: ByteArray): Surface? {
-        if (surfaceBytes.isEmpty()) return null
-        val p = Parcel.obtain()
-        return try {
-            p.unmarshall(surfaceBytes, 0, surfaceBytes.size)
-            p.setDataPosition(0)
-            val surface = Surface.CREATOR.createFromParcel(p) as? Surface
-            if (surface == null) {
-                Log.e(TAG, "Surface.CREATOR.createFromParcel returned null")
-            } else if (!surface.isValid) {
-                Log.w(TAG, "Surface is not valid after unmarshall (may still work)")
+    private fun startImageListenerThread(reader: ImageReader, outSocket: OutputStream, minSendIntervalNs: Long) {
+        val t = object : Thread("autobot-img-listener") {
+            override fun run() {
+                android.os.Looper.prepare()
+                val handler = android.os.Handler(android.os.Looper.myLooper()!!)
+                reader.setOnImageAvailableListener({ r ->
+                    trySendFrame(r, outSocket, minSendIntervalNs)
+                }, handler)
+                Log.i(TAG, "ImageListenerHandlerThread started, waiting for frames...")
+                android.os.Looper.loop()
+                Log.i(TAG, "ImageListenerHandlerThread exited (Looper quit)")
             }
-            surface
+        }
+        t.isDaemon = true
+        t.start()
+    }
+
+    /**
+     * 从 ImageReader 拿到最新一帧 → YUV_420_888 → JPEG 压缩 → MSG_FRAME 发 socket
+     * 带简单的节流：minSendIntervalNs 以下的帧直接丢弃（避免 socket 缓冲积压）
+     */
+    private var lastSendTimeNs = 0L
+    private val jpegRectPool = ThreadLocal.withInitial { Rect() }
+
+    private fun trySendFrame(reader: ImageReader, outSocket: OutputStream, minSendIntervalNs: Long) {
+        val now = System.nanoTime()
+        if (now - lastSendTimeNs < minSendIntervalNs) {
+            // 简单 drop
+            val img: Image? = try { reader.acquireLatestImage() } catch (_: Exception) { null }
+            img?.close()
+            return
+        }
+        val image = try {
+            reader.acquireLatestImage()
         } catch (e: Exception) {
-            Log.e(TAG, "Surface unmarshall exception", e)
-            null
+            Log.w(TAG, "acquireLatestImage failed: ${e.message}")
+            return
+        } ?: return
+
+        try {
+            val w = image.width
+            val h = image.height
+            val planes = image.planes
+            val yBuffer = planes[0].buffer
+            val uBuffer = planes[1].buffer
+            val vBuffer = planes[2].buffer
+            val yRowStride = planes[0].rowStride
+            val uvRowStride = planes[1].rowStride
+            val uvPixelStride = planes[1].pixelStride
+
+            val nv21 = yuv420ToNv21(w, h, yBuffer, uBuffer, vBuffer, yRowStride, uvRowStride, uvPixelStride)
+            val yuv = YuvImage(nv21, ImageFormat.NV21, w, h, null)
+
+            val jpegBaos = ByteArrayOutputStream(64 * 1024)
+            val rect = jpegRectPool.get()
+            rect.set(0, 0, w, h)
+            if (!yuv.compressToJpeg(rect, jpegQuality, jpegBaos)) {
+                Log.w(TAG, "compressToJpeg returned false")
+                return
+            }
+            val jpegBytes = jpegBaos.toByteArray()
+            val idx = frameIndex++
+            val pkt = FramePacket(width = w, height = h, jpegBytes = jpegBytes, frameIndex = idx)
+            VDProtocol.writeMessage(outSocket, VDProtocol.MSG_FRAME, pkt.toByteArray())
+            lastSendTimeNs = now
+        } catch (e: Exception) {
+            Log.w(TAG, "trySendFrame failed: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
-            p.recycle()
+            image.close()
         }
     }
 
     /**
-     * 写 MSG_CREATE_VD_RESP
+     * YUV_420_888 → NV21（YuvImage 只支持 NV21 作为 compressToJpeg 输入格式）
+     *  - YUV_420_888 是 3-plane (Y, U, V)，U/V rowStride/pixelStride 可能与 plane buffer size 不一致
+     *  - NV21 是 YYYY... + VUVU... 交替，U/V 行 2x2 亚采样，U/V pixelStride=2
      */
+    private fun yuv420ToNv21(
+        w: Int, h: Int,
+        yBuf: java.nio.ByteBuffer,
+        uBuf: java.nio.ByteBuffer,
+        vBuf: java.nio.ByteBuffer,
+        yRowStride: Int,
+        uvRowStride: Int,
+        uvPixelStride: Int
+    ): ByteArray {
+        val ySize = w * h
+        val nv21 = ByteArray(ySize * 3 / 2) // Y + V/U interleaved
+        val yArr = ByteArray(yBuf.remaining())
+        yBuf.duplicate().get(yArr)
+
+        // 简化：如果 yRowStride == w（row 对齐正好为 1 行宽），直接拷贝
+        if (yRowStride == w) {
+            System.arraycopy(yArr, 0, nv21, 0, ySize)
+        } else {
+            for (row in 0 until h) {
+                val srcOff = row * yRowStride
+                val dstOff = row * w
+                System.arraycopy(yArr, srcOff, nv21, dstOff, w)
+            }
+        }
+
+        // 拷贝 VU plane
+        val uvSize = ySize / 4
+        val uArr = ByteArray(uBuf.remaining())
+        val vArr = ByteArray(vBuf.remaining())
+        uBuf.duplicate().get(uArr)
+        vBuf.duplicate().get(vArr)
+
+        val uvDstOffset = ySize
+        // NV21: V U V U ... (interleaved, every 2x2 luma -> one VU pair)
+        for (row in 0 until h step 2) {
+            val uvSrcRowOff = (row / 2) * uvRowStride
+            val uvDstRowOff = (row / 2) * w  // each subsampled row has w/2 VU pairs
+            for (col in 0 until w step 2) {
+                val srcIdx = uvSrcRowOff + (col / 2) * uvPixelStride
+                val dstIdx = uvDstOffset + uvDstRowOff + col
+                // NV21 order: V then U
+                nv21[dstIdx] = vArr[srcIdx]
+                if (dstIdx + 1 < nv21.size) {
+                    nv21[dstIdx + 1] = uArr[srcIdx]
+                }
+            }
+        }
+        return nv21
+    }
+
     private fun writeResp(out: OutputStream, ok: Boolean, displayId: Int, error: String) {
         try {
-            val resp = VDResponse(ok = ok, displayId = displayId, error = error)
-            VDProtocol.writeMessage(out, VDProtocol.MSG_CREATE_VD_RESP, resp.toByteArray())
+            VDProtocol.writeMessage(out, VDProtocol.MSG_CREATE_VD_RESP,
+                VDResponse(ok, displayId, error).toByteArray())
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write MSG_CREATE_VD_RESP", e)
         }
     }
 
-    /**
-     * 心跳保活循环：
-     *  - 每 5s 读一次消息（不主动发 PING，由 App 端发 PING，server 回 PONG）
-     *  - 15s 没收到任何消息 → 视为 App 已死，release VD + exit
-     *  - 收到 RELEASE_VD → release VD + 写 RESP + break
-     *  - 收到 PING → 写 PONG
-     *  - socket 异常 → release VD + exit
-     */
-    private fun runKeepAliveLoop(input: InputStream, out: OutputStream) {
-        Log.i(TAG, "keepAlive loop started (PING_INTERVAL=${PING_INTERVAL_MS}ms, PONG_TIMEOUT=${PONG_TIMEOUT_MS}ms)")
-
+    private fun runKeepAliveLoop(input: java.io.InputStream, out: OutputStream, reader: ImageReader) {
+        Log.i(TAG, "keepAlive started (ping + release + msg dispatch)")
         while (running && heldVd != null) {
-            // 用 available + 短 sleep 实现"等消息但每秒看一次"的轻量 polling
-            // 不能直接 readMessage 阻塞，因为要支持 PONG 超时
-            // scrcpy 用 SO_TIMEOUT，Android LocalSocket 不支持 SO_TIMEOUT（API 26+ 才有 setSoTimeout 但 LocalSocket 不行）
-            // 简化方案：让 readMessage 阻塞，socket 断连时会抛 IOException 退出
             try {
-                val (msgType, payload) = VDProtocol.readMessage(input)
+                val (msgType, _) = VDProtocol.readMessage(input)
                 when (msgType) {
                     VDProtocol.MSG_PING -> {
-                        // 回 PONG
-                        VDProtocol.writeMessage(out, VDProtocol.MSG_PONG, VDProtocol.EMPTY_PAYLOAD)
+                        try { VDProtocol.writeMessage(out, VDProtocol.MSG_PONG, VDProtocol.EMPTY_PAYLOAD) }
+                        catch (_: Exception) { break }
+                    }
+                    VDProtocol.MSG_FRAME_ACK -> {
+                        ackCounter++
                     }
                     VDProtocol.MSG_RELEASE_VD -> {
-                        Log.i(TAG, "Received RELEASE_VD, releasing...")
-                        writeResp(out, ok = true, displayId = -1, error = "")
-                        releaseVd()
+                        Log.i(TAG, "Received RELEASE_VD, releasing VD and exiting...")
+                        releaseAll()
+                        try { VDProtocol.writeMessage(out, VDProtocol.MSG_RELEASE_VD_RESP, VDProtocol.EMPTY_PAYLOAD) }
+                        catch (_: Exception) {}
                         running = false
-                    }
-                    else -> {
-                        Log.w(TAG, "Unexpected msg in keepAlive: type=$msgType, ignoring")
+                        break
                     }
                 }
             } catch (e: Exception) {
-                // socket 断连 / EOF
-                Log.w(TAG, "keepAlive: socket read failed (${e.javaClass.simpleName}: ${e.message}), releasing VD and exiting")
-                releaseVd()
-                running = false
+                Log.w(TAG, "keepAlive socket exception: ${e.javaClass.simpleName}: ${e.message}")
+                break
             }
         }
-        Log.i(TAG, "keepAlive loop exited")
+        Log.i(TAG, "keepAlive exited")
     }
 
-    /**
-     * 释放 VirtualDisplay 和 Surface 资源（幂等）
-     */
-    private fun releaseVd() {
-        try {
-            heldVd?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "VD release exception: ${e.message}")
-        }
+    private fun releaseAll() {
+        try { heldVd?.release() } catch (e: Exception) { Log.w(TAG, "VD release: ${e.message}") }
         heldVd = null
-
-        try {
-            heldSurface?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "Surface release exception: ${e.message}")
-        }
-        heldSurface = null
+        try { heldReader?.close() } catch (e: Exception) { Log.w(TAG, "ImageReader close: ${e.message}") }
+        heldReader = null
+        // Looper.quit() 让 ImageListenerHandlerThread 自行退出
+        try { android.os.Looper.myLooper()?.quitSafely() } catch (_: Exception) {}
     }
 }
