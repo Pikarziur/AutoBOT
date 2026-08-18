@@ -1,51 +1,48 @@
 package com.autobot.app.server
 
-import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
-import android.net.LocalSocketAddress.Namespace
 import android.os.Process
 import android.util.Log
 import com.autobot.app.third.DisplayManagerHelper
 import com.autobot.app.third.FakeContext
 import com.autobot.app.third.Workarounds
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.OutputStream
 
 /**
  * Server 进程入口（Shizuku.newProcess 启动的 shell uid app_process）
  *
- * 架构（scrcpy/MAA-Meow 同款数据流方向）：
- *   App 进程创建 socket，ShizukuProcessManager.launchServer → 我们的 main() 被 app_process 调用
- *     1. 连到 App 进程的 LocalServerSocket("com.autobot.app.vdserver")
- *     2. 读 MSG_CREATE_VD(w,h,density,flags,name,jpegQuality,maxFps)
- *     3. Workarounds.apply() + FakeContext.get()（补 app_process 缺的 ActivityThread）
- *     4. ImageReader.newInstance(w,h,YUV_420_888, maxImages=3) 拿 Surface
- *        → 这 Surface 是 VD 输出端，**不需要跨进程！** 直接拿来 createVirtualDisplay
- *     5. onImageAvailable → acquireLatestImage → YUV_420_888 planes → 压缩 JPEG q=90
- *        → FramePacket(w,h,jpegBytes,frameIndex) → writeMessage(MSG_FRAME) → socket
- *     6. 运行中循环：PING→PONG / RELEASE_VD→释放→RESP / socket 异常→退出
+ * ★关键架构变更（修复 LocalSocket Permission denied）★：
+ *   旧方案 ❌：App 创建 LocalServerSocket → server 用 LocalSocket.connect()
+ *              → Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的
+ *                abstract namespace socket → IOException: Permission denied
+ *   新方案 ✅（scrcpy 同款架构）：直接用 stdin/stdout pipe
+ *     - App 端通过 process.outputStream 写 → server 端 System.in 读
+ *     - server 端 System.out.write → App 端 process.inputStream 读
+ *     - AndroidRuntime 启动日志和 Android Log 走 logd，不污染 stdout pipe
  *
- * 修复 Parcel.marshall 失败的关键点：
- *   不再接收 App 端 Surface Parcel（因为 Parcel.marshall() 不能处理 Surface 里的
- *   IGraphicBufferProducer Binder）。server 端同时持有 VD creator + VD consumer 两端，
- *   完全绕开 Surface 跨进程传递死胡同。
+ * 数据流：
+ *   1. App → server：MSG_CREATE_VD / MSG_PING / MSG_FRAME_ACK / MSG_RELEASE_VD
+ *   2. server → App：MSG_CREATE_VD_RESP / MSG_FRAME / MSG_PONG / MSG_RELEASE_VD_RESP
+ *
+ * 关键修复（修复 Parcel.marshall 失败）：
+ *   不再接收 App 端 Surface Parcel（Surface 内藏 IGraphicBufferProducer Binder）。
+ *   server 端同时持有 VD creator + VD consumer 两端，完全绕开 Surface 跨进程传递死胡同。
  *
  * server 端自己读帧也有额外好处：
  *   - 不需要在独立进程加载 libautobot_native.so（不用处理 JNI class 路径注册问题）
  *   - 全部用 Java/Kotlin 标准 API（minSdk=26 都覆盖 ImageReader/YuvImage/BitmapFactory）
- *   - 崩溃栈更容易在 [server.err] 日志中读出来
+ *   - 崩溃栈更容易在 logcat 的 ServerMain tag 中读出来
  */
 object ServerMain {
 
     private const val TAG = "ServerMain"
-    private const val DEFAULT_SOCKET_NAME = "com.autobot.app.vdserver"
 
     /** 最大 ImageReader 缓冲帧数：3 足够 30fps 不丢帧 */
     private const val MAX_IMAGES = 3
@@ -59,18 +56,21 @@ object ServerMain {
     @Volatile private var heldReader: ImageReader? = null
     @Volatile private var running = true
 
+    /**
+     * Server 入口。args 不再传 socketName 参数（用 stdin/stdout pipe 通信）。
+     *
+     * ★关键：用 System.in / System.out 替代 LocalSocket★
+     *   Shizuku.newProcess 返回的 Process 对象的 inputStream/outputStream 自动连接到
+     *   server 进程的 System.out / System.in，无需任何 socket 建连，无 SELinux 限制
+     */
     @JvmStatic
     fun main(args: Array<String>) {
-        val socketName = args.getOrElse(0) { DEFAULT_SOCKET_NAME }
-        Log.i(TAG, "🚀 start socket=$socketName pid=${Process.myPid()} uid=${Process.myUid()}")
+        Log.i(TAG, "🚀 start pid=${Process.myPid()} uid=${Process.myUid()}")
 
-        val socket = LocalSocket()
+        val input: InputStream = System.`in`
+        val out: OutputStream = System.out
+
         try {
-            socket.connect(LocalSocketAddress(socketName, Namespace.ABSTRACT))
-            Log.i(TAG, "Connected to LocalSocket: $socketName")
-            val input = socket.inputStream
-            val out = socket.outputStream
-
             // 首条消息必须是 CREATE_VD
             val (msgType, payload) = try {
                 VDProtocol.readMessage(input)
@@ -98,7 +98,7 @@ object ServerMain {
         } finally {
             Log.i(TAG, "ServerMain exit, releasing VD/ImageReader")
             releaseAll()
-            try { socket.close() } catch (_: Exception) {}
+            // 不再 close socket（stdin/stdout pipe 由 App 端 process.destroy() 关闭）
             running = false
         }
     }
@@ -159,16 +159,8 @@ object ServerMain {
             Log.i(TAG, "✅ VD created, displayId=$displayId")
 
             // 7: 注册 ImageReader.onImageAvailableListener
-            val outSocket = out  // val capture for listener
-            val minSendIntervalNs = 1_000_000_000L / maxFps // 30fps ≈ 33ms
-            reader.setOnImageAvailableListener({ r ->
-                trySendFrame(r, outSocket, minSendIntervalNs)
-            }, null)  // handler=null → 用当前线程的 Looper？
-            // 注意：ImageReader.setOnImageAvailableListener 若 handler 为 null 会用当前线程的 Looper。
-            // main() 所在线程没有 Looper；onImageAvailable 不会触发！这是个大 BUG。
-            // 修复：在单独 Looper 线程注册 listener。
-            reader.setOnImageAvailableListener(null, null) // 先清掉之前的
-            startImageListenerThread(reader, outSocket, minSendIntervalNs)
+            // 注意：必须用单独的 Looper 线程注册 listener，否则 onImageAvailable 不触发
+            startImageListenerThread(reader, out, 1_000_000_000L / maxFps)
 
             writeResp(out, ok = true, displayId = displayId, error = "")
             return true to reader
@@ -188,13 +180,13 @@ object ServerMain {
      * 为 ImageReader 启动一个带 Looper 的 HandlerThread，保证 onImageAvailable 被调用。
      * 如果 handler=null，ImageReader 会尝试用当前线程 Looper，没有就静默丢回调。
      */
-    private fun startImageListenerThread(reader: ImageReader, outSocket: OutputStream, minSendIntervalNs: Long) {
+    private fun startImageListenerThread(reader: ImageReader, outPipe: OutputStream, minSendIntervalNs: Long) {
         val t = object : Thread("autobot-img-listener") {
             override fun run() {
                 android.os.Looper.prepare()
                 val handler = android.os.Handler(android.os.Looper.myLooper()!!)
                 reader.setOnImageAvailableListener({ r ->
-                    trySendFrame(r, outSocket, minSendIntervalNs)
+                    trySendFrame(r, outPipe, minSendIntervalNs)
                 }, handler)
                 Log.i(TAG, "ImageListenerHandlerThread started, waiting for frames...")
                 android.os.Looper.loop()
@@ -206,13 +198,13 @@ object ServerMain {
     }
 
     /**
-     * 从 ImageReader 拿到最新一帧 → YUV_420_888 → JPEG 压缩 → MSG_FRAME 发 socket
-     * 带简单的节流：minSendIntervalNs 以下的帧直接丢弃（避免 socket 缓冲积压）
+     * 从 ImageReader 拿到最新一帧 → YUV_420_888 → JPEG 压缩 → MSG_FRAME 发 stdout pipe
+     * 带简单的节流：minSendIntervalNs 以下的帧直接丢弃（避免 pipe 缓冲积压）
      */
     private var lastSendTimeNs = 0L
     private val jpegRectPool = ThreadLocal.withInitial { Rect() }
 
-    private fun trySendFrame(reader: ImageReader, outSocket: OutputStream, minSendIntervalNs: Long) {
+    private fun trySendFrame(reader: ImageReader, outPipe: OutputStream, minSendIntervalNs: Long) {
         val now = System.nanoTime()
         if (now - lastSendTimeNs < minSendIntervalNs) {
             // 简单 drop
@@ -251,7 +243,7 @@ object ServerMain {
             val jpegBytes = jpegBaos.toByteArray()
             val idx = frameIndex++
             val pkt = FramePacket(width = w, height = h, jpegBytes = jpegBytes, frameIndex = idx)
-            VDProtocol.writeMessage(outSocket, VDProtocol.MSG_FRAME, pkt.toByteArray())
+            VDProtocol.writeMessage(outPipe, VDProtocol.MSG_FRAME, pkt.toByteArray())
             lastSendTimeNs = now
         } catch (e: Exception) {
             Log.w(TAG, "trySendFrame failed: ${e.javaClass.simpleName}: ${e.message}")
@@ -291,6 +283,7 @@ object ServerMain {
         }
 
         // 拷贝 VU plane
+        @Suppress("unused")
         val uvSize = ySize / 4
         val uArr = ByteArray(uBuf.remaining())
         val vArr = ByteArray(vBuf.remaining())
@@ -324,7 +317,7 @@ object ServerMain {
         }
     }
 
-    private fun runKeepAliveLoop(input: java.io.InputStream, out: OutputStream, reader: ImageReader) {
+    private fun runKeepAliveLoop(input: InputStream, out: OutputStream, reader: ImageReader) {
         Log.i(TAG, "keepAlive started (ping + release + msg dispatch)")
         while (running && heldVd != null) {
             try {
@@ -347,7 +340,7 @@ object ServerMain {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "keepAlive socket exception: ${e.javaClass.simpleName}: ${e.message}")
+                Log.w(TAG, "keepAlive pipe exception: ${e.javaClass.simpleName}: ${e.message}")
                 break
             }
         }

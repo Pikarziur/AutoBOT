@@ -124,23 +124,37 @@ object ShizukuProcessManager {
     /**
      * 通过 Shizuku.newProcess() 启动独立 app_process server 进程。
      *
+     * ★关键架构变更（修复 LocalSocket Permission denied）★：
+     *   旧方案 ❌：App 创建 LocalServerSocket(abstract) → server 进程用 LocalSocket.connect()
+     *              → Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的
+     *                abstract namespace socket → IOException: Permission denied
+     *   新方案 ✅：直接用 Shizuku.newProcess 返回的 Process 对象的 stdin/stdout pipe
+     *              （App.process.outputStream ↔ server.System.in，
+     *               App.process.inputStream  ↔ server.System.out）
+     *              这是 scrcpy 同款架构，无需任何 socket，且 Android 唯一允许的
+     *              shell↔untrusted_app 跨进程通信方式
+     *
      * 反射模式与 ShellExecutor.executeWithShizukuStreaming 完全一致，
      * 已在 Shizuku 13.1.5 上验证可用（v13.1+ 标记为 @hide private API）。
      *
-     * @param socketName App 进程已创建的 LocalServerSocket abstract namespace 名
-     * @return Process 对象，调用方持有用于 destroyForcibly() / 读 stdout
+     * @return Process 对象，调用方持有用于：
+     *   - process.outputStream 写 MSG_CREATE_VD / PING / FRAME_ACK / RELEASE_VD
+     *   - process.inputStream  读 MSG_CREATE_VD_RESP / MSG_FRAME / MSG_PONG / MSG_RELEASE_VD_RESP
+     *   - process.errorStream  需要 drain，否则 server 写 stderr 满会阻塞
+     *   - process.destroyForcibly() 销毁 server 进程
      * @throws IllegalStateException Shizuku 未授权或反射调用失败
      */
-    fun launchServer(socketName: String): Process {
+    fun launchServer(): Process {
         // 探测 app_process 路径（部分 ROM 用 app_process32/64）
         val appProcessBin = detectAppProcessPath()
 
+        // ★不再传 socketName 参数！★
+        // stdin/stdout pipe 是 Shizuku.newProcess 内部自动建立的，不需要 socket name
         val cmd = arrayOf(
             appProcessBin,
             "-Djava.class.path=$SERVER_APK_PATH",
             "/",
-            SERVER_MAIN_CLASS,
-            socketName
+            SERVER_MAIN_CLASS
         )
 
         return try {

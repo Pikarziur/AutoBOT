@@ -2,8 +2,6 @@ package com.autobot.app.service
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.net.LocalServerSocket
-import android.net.LocalSocket
 import android.util.Log
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.ShizukuProcessManager
@@ -14,42 +12,54 @@ import com.autobot.app.server.VDRequest
 import com.autobot.app.server.VDResponse
 import com.autobot.app.third.DisplayManagerHelper
 import com.autobot.app.util.ShellExecutor
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 虚拟显示器合成服务（scrcpy/MAA-Meow 同款数据流架构）
  *
+ * ★关键架构（修复 LocalSocket Permission denied）★：
+ *   不再使用 LocalServerSocket/LocalSocket abstract namespace。
+ *   Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的 abstract socket。
+ *   改用 Shizuku.newProcess 返回的 Process 的 stdin/stdout pipe 跨进程通信。
+ *
  * ┌─ App 进程（本类）─────────────────────────────────────────────┐
  * │  MonitorViewModel → CompositionService                        │
  * │                                                             │
  * │  step1: Shizuku 授权检查                                      │
- * │  step2: 启动 LocalServerSocket("com.autobot.app.vdserver")    │
- * │  step3: ShizukuProcessManager.ensureServerApk + launchServer   │
- * │  step4: server 进程（shell uid）连入 → accept()                │
- * │  step5: send MSG_CREATE_VD(width,height,dpi,flags,name,...)   │
- * │  step6: recv MSG_CREATE_VD_RESP → cachedDisplayId              │
- * │  step7: frameReceiveThread 循环 recv MSG_FRAME → decode JPEG   │
- * │         → Bitmap → NativeCapturer.injectExternalFrame(bitmap)  │
- * │         → Native 端 frameBuffer 更新（识图 + 预览共用）        │
+ * │  step2: NativeCapturer.prepareFrameBuffer                     │
+ * │  step3: ShizukuProcessManager.ensureServerApk                 │
+ * │  step4: launchServer() → serverProcess: Process               │
+ * │         ↳ stderrDrainThread 持续读 process.errorStream        │
+ * │           → Log.i("ServerMain.stderr", line) 写到 logcat     │
+ * │  step5: writeMessage(process.outputStream, MSG_CREATE_VD)    │
+ * │  step6: readMessage(process.inputStream) → MSG_CREATE_VD_RESP│
+ * │         → cachedDisplayId                                    │
+ * │  step7: keepAliveThread 循环 write PING (process.outputStream)│
+ * │  step8: frameReceiveThread 循环 readMessage(process.inputStream)
+ * │         → MSG_FRAME → FramePacket.decodeBitmap                │
+ * │         → NativeCapturer.injectExternalFrame(bitmap)          │
  * └───────────────────────────────────────────────────────────────┘
  *          ▲                                           │
- *          │ LocalSocket abstract namespace + VDProtocol│
+ *          │ stdin/stdout pipe + VDProtocol 二进制帧   │
  *          ▼                                           │
  * ┌─ Server 进程（shell uid，ServerMain.main）───────────────────┐
- * │  step1: Workarounds.apply + FakeContext                     │
- * │  step2: 反射 DisplayManager(Context)                         │
- * │  step3: ImageReader.newInstance(w,h,YUV_420_888,3)           │
- * │  step4: createVirtualDisplay(name,w,h,dpi,reader.surface,f)  │
- * │  step5: ImageReader.onImageAvailable → acquireLatestImage    │
- * │         → YUV planes → Bitmap → compress JPEG → FramePacket  │
- * │         → send MSG_FRAME                                     │
+ * │  step1: System.in.read → MSG_CREATE_VD                         │
+ * │  step2: Workarounds.apply + FakeContext                        │
+ * │  step3: 反射 DisplayManager(Context)                            │
+ * │  step4: ImageReader.newInstance(w,h,YUV_420_888,3)             │
+ * │  step5: createVirtualDisplay(name,w,h,dpi,reader.surface,f)    │
+ * │  step6: ImageReader.onImageAvailable → acquireLatestImage       │
+ * │         → YUV planes → compress JPEG → FramePacket             │
+ * │         → writeMessage(System.out, MSG_FRAME)                 │
+ * │  step7: System.in 循环 read → PING/PONG / RELEASE_VD            │
  * └───────────────────────────────────────────────────────────────┘
  *
- * 关键修复：去掉了"App 创建 AImageReader/Surface 跨进程传 server"的错误路径
- * （Surface 内藏 IGraphicBufferProducer Binder → Parcel.marshall() 直接抛
- *   RuntimeException: Tried to marshall a Parcel that contains objects (binders or FDs)
- *  这是 Android 系统层硬限制）
+ * 关键修复历史：
+ *  1. Surface.writeToParcel + marshall() 失败（含 Binder）→ 改用 server 端 JPEG 传输
+ *  2. LocalSocket Permission denied（SELinux）→ 改用 stdin/stdout pipe
  *
  * 公共 API 保持与 MonitorViewModel 完全兼容：
  *  startVirtualDisplay / restartVirtualDisplay / displayId / isLandscape /
@@ -65,11 +75,9 @@ class CompositionService(private val context: Context) {
         const val DEFAULT_HEIGHT = 960
         const val DEFAULT_DPI = 240
         private const val VIRTUAL_DISPLAY_NAME = "AutoBOT-VirtualDisplay"
-        private const val SOCKET_NAME = "com.autobot.app.vdserver"
         private const val PING_INTERVAL_MS = 5_000L
-        private const val PONG_TIMEOUT_MS = 12_000L
-        private const val SERVER_CONNECT_TIMEOUT_MS = 5_000L
-        private const val CREATE_VD_RESP_TIMEOUT_MS = 10_000L
+        private const val SERVER_HANDSHAKE_TIMEOUT_MS = 8_000L
+        private const val CREATE_VD_RESP_TIMEOUT_MS = 15_000L
         /** JPEG 压缩质量 1~100：90 足够清晰识别；100 帧变大延迟高 */
         private const val JPEG_QUALITY = 90
         /** 30fps 是 VD 默认刷新率，识别/点击场景 15fps 也够用 */
@@ -77,34 +85,30 @@ class CompositionService(private val context: Context) {
     }
 
     /**
-     * NativeCapturer 现在在 App 进程仅作为"帧消费者"：
-     *   - 不再 setupNativeCapturer（因为 AImageReader 在 server 端）
-     *   - releaseNativeCapturer() 仍然释放 frameBuffer / previewSurface
-     *   - setPreviewSurface() 仍然控制预览 blit 目标
-     *   - 新增 injectExternalFrame(Bitmap) 把 server 发来的 JPEG 解码后帧写入 frameBuffer
-     *   - getFrameBufferBitmap() / getFrameCount() 仍然从 Native 端读（保持 API 不变）
+     * NativeCapturer 在 App 进程仅作为"帧消费者"：
+     *   - prepareFrameBuffer(w,h) 分配帧缓冲内存
+     *   - injectExternalFrame(Bitmap) 把 server 发来的 JPEG 解码后帧写入 frameBuffer
+     *   - setPreviewSurface() 控制预览 blit 目标
+     *   - getFrameBufferBitmap() / getFrameCount() 从 Native 端读
      */
     private var capturer: NativeCapturer? = null
 
     private var cachedPreviewSurface: android.view.Surface? = null
 
-    @Volatile
-    private var serverSocket: LocalServerSocket? = null
-    @Volatile
-    private var clientSocket: LocalSocket? = null
+    /** Shizuku.newProcess 返回的 Process 对象，所有跨进程通信通过它的 3 个流 */
     @Volatile
     private var serverProcess: Process? = null
-    @Volatile
-    private var stdoutThread: Thread? = null
-    @Volatile
-    private var stderrThread: Thread? = null
 
-    /** PING 线程（发送） */
+    /** 持续读 server 的 stderr（避免 server 写满 stderr 后阻塞）+ 转发到 logcat */
+    @Volatile
+    private var stderrDrainThread: Thread? = null
+
+    /** PING 线程（只写不发读，避免与 frameReceiveThread 抢 inputStream） */
     @Volatile
     private var keepAliveThread: Thread? = null
     private val keepAliveRunning = AtomicBoolean(false)
 
-    /** MSG_FRAME 接收线程 */
+    /** MSG_FRAME 接收线程（独占 process.inputStream） */
     @Volatile
     private var frameReceiveThread: Thread? = null
     private val frameReceiveRunning = AtomicBoolean(false)
@@ -160,14 +164,10 @@ class CompositionService(private val context: Context) {
             // step2: 初始化 NativeCapturer（仅分配 frameBuffer + 准备 preview blit）
             Log.i(TAG, "step2 NativeCapturer prepare ...")
             val cap = NativeCapturer()
-            // setupNativeCapturer 原本是"创建 AImageReader + 拿 Surface"；
-            // 现在 server 端管画面，所以我们调用新方法 prepareFrameBuffer(w,h) 只分配 frameBuffer
-            // （如果方法不存在，保留 fallback 走 setup，因为它内部也分配 frameBuffer）
             val prepared = try {
                 cap.prepareFrameBuffer(width, height)
             } catch (_: Throwable) {
                 val s = cap.setupNativeCapturer(width, height)
-                // setup 返回的 Surface 是旧 AImageReader 产物，我们不需要；但 release 避免泄漏
                 try { s?.release() } catch (_: Exception) {}
                 true
             }
@@ -178,56 +178,39 @@ class CompositionService(private val context: Context) {
             }
             capturer = cap
             Log.i(TAG, "step2 OK: NativeCapturer frame buffer ready")
-            // 如果用户之前已经 attachPreviewSurface（横竖屏重启场景），立即重新绑定
             if (cachedPreviewSurface != null && cachedPreviewSurface!!.isValid) {
                 cap.setPreviewSurface(cachedPreviewSurface)
             }
 
-            // step3: 启动 LocalServerSocket
-            Log.i(TAG, "step3 new LocalServerSocket($SOCKET_NAME) ...")
-            val localServerSocket = try {
-                LocalServerSocket(SOCKET_NAME)
-            } catch (e: IOException) {
-                val msg = "LocalServerSocket 创建失败：${e.javaClass.simpleName}: ${e.message}（重启 App 重试）"
-                Log.e(TAG, "step3 FAIL: $msg", e)
-                cap.releaseNativeCapturer(); capturer = null
-                return null to msg
-            }
-            serverSocket = localServerSocket
-            Log.i(TAG, "step3 OK")
-
-            // step4: 推送 server APK + 启动 server 进程（shell uid app_process）
-            Log.i(TAG, "step4 ensureServerApk + launchServer ...")
+            // ★不再创建 LocalServerSocket★（step3 直接启动 server 进程）
+            Log.i(TAG, "step3 ensureServerApk + launchServer ...")
             try {
                 ShizukuProcessManager.ensureServerApk(context)
-                serverProcess = ShizukuProcessManager.launchServer(SOCKET_NAME)
+                serverProcess = ShizukuProcessManager.launchServer()
             } catch (e: Exception) {
                 val msg = "server 进程启动失败：${e.message}"
-                Log.e(TAG, "step4 FAIL: $msg", e)
+                Log.e(TAG, "step3 FAIL: $msg", e)
                 cleanupAll()
                 return null to msg
             }
-            val (outT, errT) = ShizukuProcessManager.drainServerStdout(serverProcess!!) { line ->
-                Log.i(TAG, line)
-            }
-            stdoutThread = outT
-            stderrThread = errT
 
-            // step5: accept() 等待 server 连入
-            Log.i(TAG, "step5 accept (timeout=${SERVER_CONNECT_TIMEOUT_MS}ms) ...")
-            val client = try {
-                acceptWithTimeout(localServerSocket, SERVER_CONNECT_TIMEOUT_MS)
-            } catch (e: Exception) {
-                val msg = "等待 server 连入失败：${e.javaClass.simpleName}: ${e.message}（详见 [server.err] 日志）"
-                Log.e(TAG, "step5 FAIL: $msg", e)
-                cleanupAll()
-                return null to msg
-            }
-            clientSocket = client
-            Log.i(TAG, "step5 OK: server connected")
+            // step3.5: 立即启动 stderr drain 线程
+            // app_process 启动时会输出 AndroidRuntime 日志到 stderr，不 drain 会阻塞 server 写
+            stderrDrainThread = Thread({
+                try {
+                    BufferedReader(InputStreamReader(serverProcess!!.errorStream)).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            Log.i("ServerMain.stderr", line)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "stderr drain ended: ${e.message}")
+                }
+            }, "autobot-server-stderr").apply { isDaemon = true; start() }
 
-            // step6: 发 CREATE_VD（注意！不再带 Surface Parcel，server 自己创建 ImageReader）
-            Log.i(TAG, "step6 send MSG_CREATE_VD ...")
+            // step4: 发 CREATE_VD（注意！不再带 Surface Parcel，server 自己创建 ImageReader）
+            Log.i(TAG, "step4 send MSG_CREATE_VD ...")
             val flags = DisplayManagerHelper.buildDisplayFlags()
             val request = VDRequest(
                 width = width,
@@ -239,49 +222,50 @@ class CompositionService(private val context: Context) {
                 maxFps = MAX_FPS
             )
             try {
-                VDProtocol.writeMessage(client.outputStream, VDProtocol.MSG_CREATE_VD, request.toByteArray())
+                VDProtocol.writeMessage(serverProcess!!.outputStream,
+                    VDProtocol.MSG_CREATE_VD, request.toByteArray())
             } catch (e: Exception) {
                 val msg = "发 CREATE_VD 失败：${e.javaClass.simpleName}: ${e.message}"
-                Log.e(TAG, "step6 FAIL: $msg", e)
+                Log.e(TAG, "step4 FAIL: $msg", e)
                 cleanupAll()
                 return null to msg
             }
 
-            // step7: 读 CREATE_VD_RESP
-            Log.i(TAG, "step7 read MSG_CREATE_VD_RESP ...")
+            // step5: 读 CREATE_VD_RESP（带超时）
+            // 注意：server 进程刚启动，AndroidRuntime 初始化需要 1~2s，
+            // 然后 ServerMain.main() 才开始读 stdin → 处理 → 写 MSG_CREATE_VD_RESP。
+            // 超时给 15s 足够覆盖 MIUI/HyperOS 上 app_process 冷启动。
+            Log.i(TAG, "step5 read MSG_CREATE_VD_RESP (timeout=${CREATE_VD_RESP_TIMEOUT_MS}ms) ...")
             val resp = try {
-                readCreateVdRespWithTimeout(client.inputStream, CREATE_VD_RESP_TIMEOUT_MS)
+                readCreateVdRespWithTimeout(serverProcess!!.inputStream, CREATE_VD_RESP_TIMEOUT_MS)
             } catch (e: Exception) {
-                val msg = "读 CREATE_VD_RESP 失败：${e.javaClass.simpleName}: ${e.message}（详见 [server.err]）"
-                Log.e(TAG, "step7 FAIL: $msg", e)
+                val msg = "读 CREATE_VD_RESP 失败：${e.javaClass.simpleName}: ${e.message}" +
+                        "（详见 logcat [ServerMain.stderr] / [ServerMain] 标签）"
+                Log.e(TAG, "step5 FAIL: $msg", e)
                 cleanupAll()
                 return null to msg
             }
             if (!resp.ok || resp.displayId <= 0) {
                 val msg = "虚拟显示器创建失败：${resp.error.ifBlank { "displayId=${resp.displayId}" }}"
-                Log.e(TAG, "step7 FAIL: $msg")
+                Log.e(TAG, "step5 FAIL: $msg")
                 cleanupAll()
                 return null to msg
             }
             cachedDisplayId = resp.displayId
 
-            // step8: 启动 PING 线程（保活）
+            // step6: 启动 PING 线程（保活，只写不读）
             keepAliveRunning.set(true)
-            keepAliveThread = Thread({ runKeepAlive(client) }, "autobot-keepalive").apply {
+            keepAliveThread = Thread({ runKeepAlive(serverProcess!!) }, "autobot-keepalive").apply {
                 isDaemon = true; start()
             }
 
-            // step9: 启动 MSG_FRAME 接收线程 → 解码 JPEG → 注入到 NativeCapturer
+            // step7: 启动 MSG_FRAME 接收线程 → 解码 JPEG → 注入到 NativeCapturer
             frameReceiveRunning.set(true)
-            frameReceiveThread = Thread({ runFrameReceiver(client) }, "autobot-frame-receiver").apply {
+            frameReceiveThread = Thread({ runFrameReceiver(serverProcess!!) }, "autobot-frame-receiver").apply {
                 isDaemon = true; start()
             }
 
             Log.i(TAG, "✅ VirtualDisplay started: ${width}x${height} displayId=$cachedDisplayId")
-            // 返回 null 作为 Surface 也可以，但 MonitorViewModel 还在老代码把返回值作为
-            // "启动成功标志"判断；我们给一个 dummy surface 或者空判断都行。
-            // 这里返回 null —— MonitorViewModel 的 launchAppWithOrientationAdaptation
-            // 是用 second 判断错误（错误消息空=成功），所以只要 second == "" 就 OK。
             null to ""
         } catch (e: Exception) {
             var cause: Throwable? = e
@@ -342,22 +326,25 @@ class CompositionService(private val context: Context) {
         frameReceiveRunning.set(false)
         frameReceiveThread?.let { t -> t.interrupt(); try { t.join(500) } catch (_: Exception) {} }; frameReceiveThread = null
 
-        // 发 RELEASE_VD
-        val client = clientSocket
-        if (client != null && client.isConnected) {
+        // 发 RELEASE_VD 让 server 优雅退出
+        val proc = serverProcess
+        if (proc != null) {
             try {
-                VDProtocol.writeMessage(client.outputStream, VDProtocol.MSG_RELEASE_VD, VDProtocol.EMPTY_PAYLOAD)
-                try { readWithTimeout(client.inputStream, 1_000); Log.i(TAG, "Got RELEASE_VD response") }
-                catch (e: Exception) { Log.w(TAG, "Wait RELEASE_VD_RESP timeout: ${e.message}（可接受）") }
-            } catch (e: Exception) { Log.w(TAG, "Send RELEASE_VD failed: ${e.message}") }
+                VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_RELEASE_VD, VDProtocol.EMPTY_PAYLOAD)
+                try {
+                    readWithTimeout(proc.inputStream, 1_000)
+                    Log.i(TAG, "Got RELEASE_VD response")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Wait RELEASE_VD_RESP timeout: ${e.message}（可接受，将强制 destroy）")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Send RELEASE_VD failed: ${e.message}")
+            }
         }
 
-        try { clientSocket?.close() } catch (_: Exception) {}; clientSocket = null
-        try { serverSocket?.close() } catch (_: Exception) {}; serverSocket = null
-
+        // 销毁 server 进程（stdin/stdout pipe 由 destroy 自动关闭）
         ShizukuProcessManager.destroyServer(serverProcess); serverProcess = null
-        stdoutThread?.let { try { it.join(300) } catch (_: Exception) {} }; stdoutThread = null
-        stderrThread?.let { try { it.join(300) } catch (_: Exception) {} }; stderrThread = null
+        stderrDrainThread?.let { try { it.join(500) } catch (_: Exception) {} }; stderrDrainThread = null
 
         try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
         capturer = null
@@ -368,14 +355,14 @@ class CompositionService(private val context: Context) {
     // ===================== 内部实现 =====================
 
     /**
-     * MSG_FRAME 接收主循环：
-     *  - 每次 VDProtocol.readMessage 拿到新消息 → 只处理 MSG_FRAME，其他类型忽略
+     * MSG_FRAME 接收主循环（独占 process.inputStream）：
+     *  - VDProtocol.readMessage 拿到新消息 → 处理 MSG_FRAME / MSG_PONG / 其他忽略
      *  - FramePacket.fromByteArray → decodeBitmap() → NativeCapturer.injectExternalFrame(bitmap)
      *    → Native 端自动写入 frameBuffer + 若 previewSurface 已设置则 blit 到 SurfaceView
-     *  - socket 异常：退出循环 + cachedDisplayId=-1（调用方 UI 轮询 displayId 状态可感知）
+     *  - pipe 异常：退出循环 + cachedDisplayId=-1（UI 可感知）
      */
-    private fun runFrameReceiver(client: LocalSocket) {
-        val input = client.inputStream
+    private fun runFrameReceiver(process: Process) {
+        val input = process.inputStream
         Log.i(TAG, "frameReceiveThread started")
         while (frameReceiveRunning.get() && !Thread.currentThread().isInterrupted) {
             val (type, payload) = try {
@@ -390,22 +377,23 @@ class CompositionService(private val context: Context) {
                         val pkt = FramePacket.fromByteArray(payload)
                         val bitmap = pkt.decodeBitmap() ?: continue
                         capturer?.injectExternalFrame(bitmap)
-                        // 注意：injectExternalFrame 内部已经自增 frameCount
+                        // injectExternalFrame 内部已自增 frameCount
                     } catch (e: Exception) {
                         Log.e(TAG, "FramePacket decode failed: ${e.message}")
                     }
-                    // 可选：写 MSG_FRAME_ACK 让 server 节流（如果 server 发送过快导致 socket 缓冲积压）
-                    try { VDProtocol.writeMessage(client.outputStream, VDProtocol.MSG_FRAME_ACK, VDProtocol.EMPTY_PAYLOAD) }
-                    catch (_: Exception) {}
+                    // 写 MSG_FRAME_ACK 让 server 节流（避免发送过快导致 pipe 缓冲积压）
+                    try {
+                        VDProtocol.writeMessage(process.outputStream,
+                            VDProtocol.MSG_FRAME_ACK, VDProtocol.EMPTY_PAYLOAD)
+                    } catch (_: Exception) {}
                 }
                 VDProtocol.MSG_PONG -> {
-                    // keepAliveThread 不在这里处理；记录一下 lastPongTime 给 PING 线程共享也可以，
-                    // 但现在 PING 线程走 readWithTimeout，PONG 消息可能被两条线程各抢一半，
-                    // 所以最简单：让 PING 走单独的写 + 轮询式读，MSG_FRAME/其他消息交给 frameReceiveThread 独享 inputStream
-                    // 但我们的实现现在是两条线程都读 inputStream，会抢包。
-                    // 这是个 bug！修复：把 PONG 和 MSG_FRAME 都由 frameReceiveThread 处理，
-                    // 保活只负责写 PING 不负责读，而"PONG 超时"用最近收到任意消息（包括 MSG_FRAME）
-                    // 的时间来判断（因为只要 socket 通，就有 MSG_FRAME 高频消息）。
+                    // 收到 PONG 表明 pipe 还活着；不做事
+                }
+                VDProtocol.MSG_RELEASE_VD_RESP -> {
+                    // 收到 server 释放响应：可以退出了
+                    Log.i(TAG, "Got RELEASE_VD_RESP from server, exiting frameReceive loop")
+                    break
                 }
             }
         }
@@ -415,27 +403,18 @@ class CompositionService(private val context: Context) {
     }
 
     /**
-     * 保活线程：现在只负责**定时写 PING**，**不读**（防止和 frameReceiveThread 抢包）。
-     * 保活超时判定移到 frameReceiveThread：只要 MSG_FRAME 连续 2 秒没收到就视为断。
-     * 如果没画面（VD 里没 App），server 端 onImageAvailable 不触发，MSG_FRAME 可能不发。
-     * 那就改成：PING 线程**写 PING**，然后通过一个 volatile 共享"lastAnyMessageTime"时间戳，
-     * frameReceiveThread 每收到一条消息（包括 MSG_FRAME/MSG_PONG/...）就更新它。
-     * PING 线程每 5s 检查一次 lastAnyMessageTime，如果超过 12s 没更新就报错退出。
-     * （这个实现比较复杂，先简化：只要 socket 不抛 IOException 就认为活着。）
+     * 保活线程：**只负责定时写 PING**，**不读**（防止和 frameReceiveThread 抢 inputStream）。
+     * pipe 异常会通过 writeMessage 抛 IOException，本线程捕获后 break。
+     * 真正的"是否还活着"判定：frameReceiveThread 持续读 MSG_FRAME，
+     * 一旦 pipe 断开 readMessage 抛异常 break，触发 cleanup。
      */
-    @Volatile
-    private var lastAnyMessageTime = System.currentTimeMillis()
-
-    private fun runKeepAlive(client: LocalSocket) {
-        val out = client.outputStream
-        // 先包一层：frameReceiveThread 里任何消息收到都更新 lastAnyMessageTime
-        // 这个通过修改 runFrameReceiver 实现：在每次 readMessage 成功后 set
-        // 为了不重写 runFrameReceiver，我们改成 PING 线程不做超时判定，只写 PING，
-        // frameReceiveThread 读到 MSG_PONG 或 MSG_FRAME 就表明 socket 还活着。
-        // 如果 socket 真断了，readMessage 会抛 IOException，两条线程中的任何一条都会 break 并 cleanup。
+    private fun runKeepAlive(process: Process) {
+        val out = process.outputStream
         Log.i(TAG, "keepAlive started (write-only PING every ${PING_INTERVAL_MS}ms)")
         while (keepAliveRunning.get() && !Thread.currentThread().isInterrupted) {
-            try { Thread.sleep(PING_INTERVAL_MS) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            try { Thread.sleep(PING_INTERVAL_MS) } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt(); break
+            }
             if (!keepAliveRunning.get()) break
             try {
                 VDProtocol.writeMessage(out, VDProtocol.MSG_PING, VDProtocol.EMPTY_PAYLOAD)
@@ -448,30 +427,24 @@ class CompositionService(private val context: Context) {
         Log.i(TAG, "keepAlive thread exited")
     }
 
-    private fun acceptWithTimeout(server: LocalServerSocket, timeoutMs: Long): LocalSocket {
-        val holder = arrayOfNulls<LocalSocket>(1)
-        val errHolder = arrayOfNulls<Exception>(1)
-        val t = Thread({
-            try { holder[0] = server.accept() } catch (e: Exception) { errHolder[0] = e }
-        }, "autobot-accept").apply { isDaemon = true; start() }
-        t.join(timeoutMs)
-        if (t.isAlive) { try { server.close() } catch (_: Exception) {}; t.interrupt(); throw IOException("accept timed out after ${timeoutMs}ms") }
-        errHolder[0]?.let { throw it }
-        return holder[0] ?: throw IOException("accept returned null")
-    }
-
     private fun readCreateVdRespWithTimeout(input: java.io.InputStream, timeoutMs: Long): VDResponse {
         val holder = arrayOfNulls<VDResponse>(1)
         val errHolder = arrayOfNulls<Exception>(1)
         val t = Thread({
             try {
                 val (type, payload) = VDProtocol.readMessage(input)
-                if (type != VDProtocol.MSG_CREATE_VD_RESP) throw IOException("expect CREATE_VD_RESP, got $type")
+                if (type != VDProtocol.MSG_CREATE_VD_RESP) {
+                    throw IOException("expect CREATE_VD_RESP, got $type")
+                }
                 holder[0] = VDResponse.fromByteArray(payload)
             } catch (e: Exception) { errHolder[0] = e }
         }, "autobot-read-resp").apply { isDaemon = true; start() }
         t.join(timeoutMs)
-        if (t.isAlive) { t.interrupt(); throw IOException("read CREATE_VD_RESP timed out after ${timeoutMs}ms") }
+        if (t.isAlive) {
+            t.interrupt()
+            throw IOException("read CREATE_VD_RESP timed out after ${timeoutMs}ms" +
+                    "（server 进程可能未启动成功，详见 [ServerMain.stderr] / [ServerMain] logcat）")
+        }
         errHolder[0]?.let { throw it }
         return holder[0] ?: throw IOException("read resp returned null")
     }
@@ -492,11 +465,8 @@ class CompositionService(private val context: Context) {
         keepAliveRunning.set(false); frameReceiveRunning.set(false)
         keepAliveThread?.let { it.interrupt(); try { it.join(300) } catch (_: Exception) {} }; keepAliveThread = null
         frameReceiveThread?.let { it.interrupt(); try { it.join(300) } catch (_: Exception) {} }; frameReceiveThread = null
-        try { clientSocket?.close() } catch (_: Exception) {}; clientSocket = null
-        try { serverSocket?.close() } catch (_: Exception) {}; serverSocket = null
         ShizukuProcessManager.destroyServer(serverProcess); serverProcess = null
-        stdoutThread?.let { try { it.join(300) } catch (_: Exception) {} }; stdoutThread = null
-        stderrThread?.let { try { it.join(300) } catch (_: Exception) {} }; stderrThread = null
+        stderrDrainThread?.let { try { it.join(300) } catch (_: Exception) {} }; stderrDrainThread = null
         try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
         capturer = null
         cachedDisplayId = -1
