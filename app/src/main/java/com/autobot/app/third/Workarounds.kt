@@ -43,6 +43,19 @@ object Workarounds {
     private val activityThreadClass: Class<*>
     private val activityThread: Any
 
+    /**
+     * 重入守卫：防止 apply() 内的 fillAppContext() → FakeContext.get() → apply() 无限递归。
+     *
+     * 递归链路：
+     *   apply() → fillAppContext() → FakeContext.get() → apply() → ... StackOverflow
+     *
+     * 当 fillAppContext() 内部触发 FakeContext.get() 时，后者会再次调用 apply()。
+     * 此时 applying=true，apply() 立即返回（因为 ActivityThread 已在 init 块中创建完毕，
+     * getSystemContext() 可以正常工作，无需等 apply() 完整执行）。
+     */
+    @Volatile
+    private var applying = false
+
     init {
         try {
             prepareMainLooper()
@@ -72,22 +85,35 @@ object Workarounds {
 
     /**
      * 入口：一次性调用，准备好全部系统环境。
-     * 多次调用安全（幂等）。
+     * 多次调用安全（幂等 + 重入守卫）。
+     *
+     * 重入场景：fillAppContext() → FakeContext.get() → apply()
+     *   第二次调用时 applying=true，直接 return。
+     *   此时 ActivityThread 已创建（init 块完成），getSystemContext() 可正常工作。
      */
     @JvmStatic
     fun apply() {
-        // 已经在静态 init 块中准备了 ActivityThread
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+ 必须先填充 ConfigurationController，再 fillAppContext
-            // （fillAppContext 依赖 getSystemContext，后者在三星等设备上会调 getConfiguration()）
-            fillConfigurationController()
+        if (applying) {
+            Log.d(TAG, "apply() reentrant call, skipped (ActivityThread already initialized)")
+            return
         }
+        applying = true
+        try {
+            // 已经在静态 init 块中准备了 ActivityThread
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+ 必须先填充 ConfigurationController，再 fillAppContext
+                // （fillAppContext 依赖 getSystemContext，后者在三星等设备上会调 getConfiguration()）
+                fillConfigurationController()
+            }
 
-        // ONYX 设备特殊处理：fillAppInfo() 会破坏镜像，这里不做品牌跳过（AutoBOT 虚拟显示器场景不受影响）
-        fillAppInfo()
-        fillAppContext()
+            // ONYX 设备特殊处理：fillAppInfo() 会破坏镜像，这里不做品牌跳过（AutoBOT 虚拟显示器场景不受影响）
+            fillAppInfo()
+            fillAppContext()
 
-        Log.i(TAG, "apply() finished")
+            Log.i(TAG, "apply() finished")
+        } finally {
+            applying = false
+        }
     }
 
     private fun prepareMainLooper() {
