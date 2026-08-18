@@ -41,8 +41,10 @@ object ShizukuProcessManager {
      *
      * 实现要点：
      *  - sourceDir 是 /data/app/.../base.apk，shell uid 通过 Shizuku 持有读权限
+     *  - **拆分为多条独立简单命令**而非单个 if/then/else/fi 脚本：
+     *    MIUI/HyperOS 上 Shizuku.newProcess 对多行 sh 脚本解析有兼容性问题，
+     *    单条简单命令更稳健 + 错误诊断更精确
      *  - 使用 cmp -s 比对避免每次启动都做无意义拷贝（性能优化）
-     *  - chmod 644 保证 app_process 在 shell domain 下可读
      *  - 失败时抛出带原因的 IllegalStateException，调用方应直接展示给用户
      *
      * @return SERVER_APK_PATH 路径
@@ -52,24 +54,70 @@ object ShizukuProcessManager {
         val src = context.applicationInfo.sourceDir
             ?: throw IllegalStateException("无法获取 APK 路径：applicationInfo.sourceDir 为 null")
 
-        // 通过 Shizuku 执行拷贝（shell uid 权限）
-        val cmd = """
-            if [ -f "$SERVER_APK_PATH" ] && cmp -s "$src" "$SERVER_APK_PATH"; then
-                echo "UP_TO_DATE";
-            else
-                cp "$src" "$SERVER_APK_PATH" && chmod 644 "$SERVER_APK_PATH" && echo "COPIED";
-            fi
-        """.trimIndent()
+        // 1. 检查目标 APK 是否已存在且内容一致（避免重复拷贝）
+        //    单条独立命令：cmp 返回 0 表示内容相同，非 0 表示不同/不存在
+        val cmpResult = ShellExecutor.execute(
+            "cmp -s \"$src\" \"$SERVER_APK_PATH\"",
+            useShizuku = true, timeout = 5_000
+        )
+        if (cmpResult.isSuccess) {
+            // cmp -s 成功 = 内容完全一致，无需重新拷贝
+            Log.i(TAG, "ensureServerApk: APK already up-to-date (cmp match), skip copy. dst=$SERVER_APK_PATH")
+            return SERVER_APK_PATH
+        }
 
-        val result = ShellExecutor.execute(cmd, useShizuku = true, timeout = 10_000)
-        if (!result.isSuccess) {
+        // cmp 失败原因可能是：① 文件不存在 ② 内容不同 ③ 权限不足
+        // 这三种情况都需要继续走 cp 流程；只有 Shizuku 调用本身失败才直接抛
+        // (ShellExecutor 在 Shizuku 反射异常时返回 -1 + stderr 含 EXCEPTION)
+        if (cmpResult.exitCode == -1 && cmpResult.stderr.contains("[EXCEPTION]")) {
             throw IllegalStateException(
-                "server APK 推送失败 (exit=${result.exitCode})\n" +
-                "stdout: ${result.stdout}\nstderr: ${result.stderr}\n" +
-                "排查：①Shizuku 是否已授权 ②/data/local/tmp 是否可写（adb shell ls -Z 验证 SELinux）"
+                "Shizuku 调用失败，无法检查 server APK：${cmpResult.stderr}\n" +
+                "排查：①Shizuku 是否已授权 ②Shizuku 服务是否在运行"
             )
         }
-        Log.i(TAG, "ensureServerApk: ${result.stdout.trim()} (src=$src, dst=$SERVER_APK_PATH)")
+        Log.i(TAG, "ensureServerApk: cmp mismatch (exit=${cmpResult.exitCode}), will copy. stderr=${cmpResult.stderr}")
+
+        // 2. 执行 cp 拷贝（单条命令，避免 if/then 复杂脚本）
+        val cpResult = ShellExecutor.execute(
+            "cp \"$src\" \"$SERVER_APK_PATH\"",
+            useShizuku = true, timeout = 10_000
+        )
+        if (!cpResult.isSuccess) {
+            throw IllegalStateException(
+                "cp 推送 server APK 失败 (exit=${cpResult.exitCode})\n" +
+                "src=$src\n" +
+                "dst=$SERVER_APK_PATH\n" +
+                "stderr: ${cpResult.stderr}\n" +
+                "排查：①/data/local/tmp 是否可写（adb shell ls -ld /data/local/tmp）\n" +
+                "    ②SELinux 是否拦截（adb shell getenforce）\n" +
+                "    ③源 APK 路径是否正确（${src}）"
+            )
+        }
+
+        // 3. 设置可读权限（app_process 在 shell domain 下读 APK 需要 644）
+        val chmodResult = ShellExecutor.execute(
+            "chmod 644 \"$SERVER_APK_PATH\"",
+            useShizuku = true, timeout = 3_000
+        )
+        if (!chmodResult.isSuccess) {
+            // chmod 失败不致命，APK 已拷贝成功，但 server 可能因权限读不到
+            // 警告 + 继续执行（让 server 端报错时给出更精确的提示）
+            Log.w(TAG, "chmod 644 失败 (exit=${chmodResult.exitCode}): ${chmodResult.stderr}")
+        } else {
+            Log.i(TAG, "ensureServerApk: cp + chmod OK, src=$src, dst=$SERVER_APK_PATH")
+        }
+
+        // 4. 校验拷贝结果（防御性编程）
+        val verifyResult = ShellExecutor.execute(
+            "[ -f \"$SERVER_APK_PATH\" ] && [ -s \"$SERVER_APK_PATH\" ] && echo OK || echo FAIL",
+            useShizuku = true, timeout = 3_000
+        )
+        if (!verifyResult.isSuccess || !verifyResult.stdout.contains("OK")) {
+            throw IllegalStateException(
+                "server APK 拷贝后校验失败: stdout=${verifyResult.stdout}, stderr=${verifyResult.stderr}"
+            )
+        }
+
         return SERVER_APK_PATH
     }
 

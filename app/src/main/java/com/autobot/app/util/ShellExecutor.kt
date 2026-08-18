@@ -298,6 +298,14 @@ object ShellExecutor {
         stderrThread.start()
 
         // 等待进程结束或超时
+        // ★关键修复★：
+        //   老实现用 process.exitValue() 轮询并只 catch IllegalThreadStateException。
+        //   但 Shizuku RemoteProcess / Android ProcessManager$ProcessImpl.exitValue()
+        //   在 MIUI/HyperOS 上抛 IllegalStateException("process hasn't exited")（不是
+        //   IllegalThreadStateException），异常从循环逃逸到外层 catch，
+        //   导致 stderr 输出 "[EXCEPTION] process hasn't exited"，exit=-1，
+        //   实际 sh 进程根本没机会执行完命令。
+        //   修复：catch 范围扩大到 RuntimeException，覆盖所有"进程未退出"类异常。
         val startTime = System.currentTimeMillis()
         var exitCode = -1
         var finished = false
@@ -306,22 +314,27 @@ object ShellExecutor {
             try {
                 exitCode = process.exitValue()
                 finished = true
-            } catch (e: IllegalThreadStateException) {
-                // 进程仍在运行，等待一小会儿
-                Thread.sleep(100)
+            } catch (e: RuntimeException) {
+                // 涵盖 IllegalThreadStateException + IllegalStateException
+                // 及其他 ROM 自定义"进程未退出"异常
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
             }
         }
 
         if (!finished) {
             // 超时，销毁进程
-            process.destroy()
-            stdoutThread.join(1000)
-            stderrThread.join(1000)
+            try { process.destroy() } catch (_: Exception) {}
+            try { stdoutThread.join(1000) } catch (_: InterruptedException) {}
+            try { stderrThread.join(1000) } catch (_: InterruptedException) {}
             return -2
         }
 
-        stdoutThread.join(timeout)
-        stderrThread.join(timeout)
+        try { stdoutThread.join(timeout) } catch (_: InterruptedException) {}
+        try { stderrThread.join(timeout) } catch (_: InterruptedException) {}
 
         return exitCode
     }

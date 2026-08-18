@@ -27,13 +27,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +69,8 @@ import kotlinx.coroutines.launch
 /**
  * 后台任务页面 - Compose 实现（完美复刻 MAA-Meow BackgroundTaskView 布局）
  *
+ * 简化版：固定启动【淘宝】app（com.taobao.taobao），不再提供 App 下拉列表。
+ *
  * 整体结构：
  *   Box(fillMaxSize)
  *     └ Column(fillMaxSize + statusBarsPadding + padding)
@@ -79,7 +78,7 @@ import kotlinx.coroutines.launch
  *         │   └ VirtualDisplayPreview（BoxWithConstraints + 按宽高比计算 Card 尺寸）
  *         ├ Spacer(8.dp)
  *         └ 下方区 Column(fillMaxWidth + weight(7f))  ← 占总高度 70%
- *             └ App 下拉列表 + 三角形播放按钮
+ *             └ 淘宝图标 + "淘宝" 文本 + 三角形播放按钮（固定）
  *
  * 全屏模式：Box(fillMaxSize + black) + previewContent + 触摸事件注入
  */
@@ -102,10 +101,9 @@ fun TasksScreen(
     var isSurfaceAvailable by remember { mutableStateOf(false) }
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
 
-    // 已安装可启动应用列表
-    var installedApps by remember { mutableStateOf<List<AppManager.AppInfo>>(emptyList()) }
-    var selectedApp by remember { mutableStateOf<AppManager.AppInfo?>(null) }
-    var appMenuExpanded by remember { mutableStateOf(false) }
+    // 淘宝 app 信息（图标 + 名称）
+    // 异步加载一次即可，加载失败回退到默认图标
+    var taobaoIcon by remember { mutableStateOf<Drawable?>(null) }
     var launching by remember { mutableStateOf(false) }
 
     // executeMessage 变化时弹 Toast
@@ -116,16 +114,16 @@ fun TasksScreen(
         }
     }
 
-    // 初次进入：启动虚拟显示器 + 加载本地应用列表
+    // 初次进入：启动虚拟显示器 + 加载淘宝图标
     LaunchedEffect(Unit) {
         if (!isRunning) {
             vm.startVirtualDisplay()
         }
         scope.launch(Dispatchers.IO) {
-            val apps = AppManager.getLaunchableApps(context, includeSystem = true)
-            installedApps = apps
-            val taobao = apps.firstOrNull { it.packageName == AppManager.DEFAULT_PACKAGE_TAOBAO }
-            selectedApp = taobao ?: apps.firstOrNull()
+            val appInfo = AppManager.getAppByPackageName(context, AppManager.DEFAULT_PACKAGE_TAOBAO)
+            if (appInfo != null) {
+                taobaoIcon = appInfo.icon
+            }
         }
     }
 
@@ -199,25 +197,17 @@ fun TasksScreen(
                         .fillMaxWidth()
                         .weight(7f)
                 ) {
-                    AppLauncherRow(
-                        selectedApp = selectedApp,
-                        installedApps = installedApps,
-                        menuExpanded = appMenuExpanded,
-                        onMenuToggle = { appMenuExpanded = !appMenuExpanded },
-                        onDismissRequest = { appMenuExpanded = false },
-                        onSelectApp = { app ->
-                            selectedApp = app
-                            appMenuExpanded = false
-                        },
+                    TaobaoLauncherRow(
+                        taobaoIcon = taobaoIcon,
                         launching = launching,
                         onLaunchClick = {
-                            val app = selectedApp ?: return@AppLauncherRow
+                            if (launching) return@TaobaoLauncherRow
                             launching = true
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     vm.launchAppWithOrientationAdaptation(
                                         context = context,
-                                        packageName = app.packageName
+                                        packageName = AppManager.DEFAULT_PACKAGE_TAOBAO
                                     )
                                 } finally {
                                     launching = false
@@ -559,19 +549,18 @@ private fun android.content.Context.findActivity(): Activity? {
 }
 
 /**
- * App 启动条
+ * 淘宝启动条（固定显示，不再支持下拉切换）
  *
- * 左侧：App 选择下拉框（图标 + 应用名 + 展开箭头）
+ * 左侧：淘宝图标 + "淘宝" 文本（图标加载失败时显示默认占位色块）
  * 右侧：三角形播放按钮（蓝色填充圆形 IconButton）
+ *
+ * 与原 AppLauncherRow 的差异：
+ *  - 移除 installedApps / DropdownMenu / DropdownMenuItem，UI 简化为单行
+ *  - 包名固定为 com.taobao.taobao，由调用方在 onLaunchClick 时传入
  */
 @Composable
-private fun AppLauncherRow(
-    selectedApp: AppManager.AppInfo?,
-    installedApps: List<AppManager.AppInfo>,
-    menuExpanded: Boolean,
-    onMenuToggle: () -> Unit,
-    onDismissRequest: () -> Unit,
-    onSelectApp: (AppManager.AppInfo) -> Unit,
+private fun TaobaoLauncherRow(
+    taobaoIcon: Drawable?,
     launching: Boolean,
     onLaunchClick: () -> Unit
 ) {
@@ -584,88 +573,34 @@ private fun AppLauncherRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // ---------------- 左侧：App 选择下拉框 ----------------
-        Box(
-            modifier = Modifier.weight(1f)
+        // ---------------- 左侧：淘宝图标 + 文本（不可点击） ----------------
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(8.dp),
+            tonalElevation = 0.dp
         ) {
-            Surface(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = installedApps.isNotEmpty(), onClick = onMenuToggle),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-                tonalElevation = 0.dp
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    AppIconDrawable(
-                        icon = selectedApp?.icon,
-                        modifier = Modifier.size(26.dp)
-                    )
+                AppIconDrawable(
+                    icon = taobaoIcon,
+                    modifier = Modifier.size(26.dp)
+                )
 
-                    Text(
-                        text = selectedApp?.appName ?: "加载中…",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 14.sp,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "选择应用",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // 下拉菜单：列出本地全部可启动应用
-            DropdownMenu(
-                expanded = menuExpanded && installedApps.isNotEmpty(),
-                onDismissRequest = onDismissRequest,
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .background(MaterialTheme.colorScheme.surface)
-            ) {
-                installedApps.forEach { app ->
-                    DropdownMenuItem(
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                AppIconDrawable(
-                                    icon = app.icon,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = app.appName,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Text(
-                                        text = app.packageName,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (selectedApp?.packageName == app.packageName) {
-                                    Text(
-                                        text = "✓",
-                                        color = accentBlue,
-                                        fontSize = 14.sp
-                                    )
-                                }
-                            }
-                        },
-                        onClick = { onSelectApp(app) }
-                    )
-                }
+                Text(
+                    text = "淘宝",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
 
@@ -673,18 +608,18 @@ private fun AppLauncherRow(
         // 蓝色填充圆形按钮，中心为三角形 PlayArrow 图标
         IconButton(
             onClick = onLaunchClick,
-            enabled = selectedApp != null && !launching,
+            enabled = !launching,
             modifier = Modifier
                 .size(44.dp)
                 .background(
-                    if (selectedApp != null && !launching) accentBlue
+                    if (!launching) accentBlue
                     else accentBlue.copy(alpha = 0.4f),
                     CircleShape
                 )
         ) {
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
-                contentDescription = "启动 App",
+                contentDescription = "启动淘宝",
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
