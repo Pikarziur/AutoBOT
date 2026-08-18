@@ -254,7 +254,8 @@ data class FramePacket(
         return try {
             BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
         } catch (e: Exception) {
-            Log.e(TAG, "FramePacket.decodeBitmap failed: ${e.message}")
+            // 注意：FramePacket 是顶层 data class，无法访问 VDProtocol companion 的 private TAG
+            Log.e("VDProtocol", "FramePacket.decodeBitmap failed: ${e.message}")
             null
         }
     }

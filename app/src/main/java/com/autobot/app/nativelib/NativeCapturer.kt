@@ -25,11 +25,26 @@ class NativeCapturer {
 
     companion object {
         init {
+            // 类首次加载时自动尝试一次，兜底吞异常避免类加载失败
             try {
-                System.loadLibrary("autobot_native")
+                loadLibrary()
             } catch (t: Throwable) {
-                android.util.Log.e("NativeCapturer", "loadLibrary autobot_native failed: ${t.message}")
+                android.util.Log.e("NativeCapturer",
+                    "companion init loadLibrary failed: ${t.message}")
             }
+        }
+
+        /**
+         * 显式加载 native 库 autobot_native.so。
+         *
+         * System.loadLibrary 对已加载的库幂等返回，重复调用安全。
+         * 本方法**不吞异常**：让调用方（如 MonitorViewModel.init）
+         * 可以通过 try-catch UnsatisfiedLinkError 在 UI 早暴露加载失败。
+         * Companion init 块调用此方法时已自行 try-catch 兜底。
+         */
+        @JvmStatic
+        fun loadLibrary() {
+            System.loadLibrary("autobot_native")
         }
     }
 
