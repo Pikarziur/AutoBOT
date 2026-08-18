@@ -199,8 +199,7 @@ class CompositionService(private val context: Context) {
             stderrDrainThread = Thread({
                 try {
                     BufferedReader(InputStreamReader(serverProcess!!.errorStream)).use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
+                        reader.forEachLine { line ->
                             Log.i("ServerMain.stderr", line)
                         }
                     }
