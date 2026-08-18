@@ -131,6 +131,10 @@ class CompositionService(private val context: Context) {
             return null to ""
         }
 
+        // 防护：确保旧的 native capturer 已释放（防止 stopVirtualDisplay 未完全清理的竞态）
+        try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
+        capturer = null
+
         // step1: Shizuku 检查
         val diag = ShizukuManager.diagnoseShizuku(context)
         when (diag) {

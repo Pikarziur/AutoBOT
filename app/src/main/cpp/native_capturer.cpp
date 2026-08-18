@@ -426,6 +426,48 @@ static jlong JNICALL native_getFrameCount(JNIEnv* /*env*/, jobject /*thiz*/) {
  * 仅分配 frameBuffer，不创建 AImageReader（Server 端负责画面采集）。
  * JNI 签名对应 Kotlin: fun prepareFrameBuffer(width: Int, height: Int): Boolean
  */
+/**
+ * 内部释放 g_ctx（与 native_releaseCapturer 逻辑一致，但无锁 g_ctxMutex，
+ * 因为调用方已持有 g_ctxMutex）。
+ */
+static void releaseCtxInline(JNIEnv* env, CapturerContext* ctx) {
+    ctx->released = true;
+
+    {
+        std::lock_guard<std::mutex> lk(ctx->previewMutex);
+        if (ctx->previewWindow != nullptr) {
+            ANativeWindow_release(ctx->previewWindow);
+            ctx->previewWindow = nullptr;
+        }
+    }
+
+    if (ctx->readerSurface != nullptr) {
+        env->DeleteGlobalRef(ctx->readerSurface);
+        ctx->readerSurface = nullptr;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(ctx->fbMutex);
+        ctx->frameBuffer.clear();
+        ctx->frameBuffer.shrink_to_fit();
+        ctx->fbWidth = 0;
+        ctx->fbHeight = 0;
+    }
+
+    if (ctx->imageReader != nullptr) {
+        AImageReader_delete(ctx->imageReader);
+        ctx->imageReader = nullptr;
+        ctx->readerWindow = nullptr;
+    }
+
+    if (ctx->javaRef != nullptr) {
+        env->DeleteGlobalRef(ctx->javaRef);
+        ctx->javaRef = nullptr;
+    }
+
+    LOGI("Old capturer released (inline)");
+}
+
 static jboolean JNICALL native_prepareFrameBuffer(JNIEnv* env, jobject thiz,
                                                   jint width, jint height) {
     LOGI("prepareFrameBuffer: %dx%d", width, height);
@@ -433,8 +475,9 @@ static jboolean JNICALL native_prepareFrameBuffer(JNIEnv* env, jobject thiz,
     std::lock_guard<std::mutex> lk(g_ctxMutex);
     if (g_ctx != nullptr) {
         LOGW("Capturer already exists, releasing old one first");
-        // 此处不调用 release（需要 JNIEnv 清理 GlobalRef），返回失败让调用方 stop 再 start
-        return JNI_FALSE;
+        releaseCtxInline(env, g_ctx);
+        delete g_ctx;
+        g_ctx = nullptr;
     }
 
     if (width <= 0 || height <= 0) {
