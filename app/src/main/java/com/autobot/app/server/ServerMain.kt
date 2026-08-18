@@ -53,6 +53,7 @@ object ServerMain {
     @Volatile private var heldVd: VirtualDisplay? = null
     @Volatile private var heldReader: ImageReader? = null
     @Volatile private var running = true
+    @Volatile private var cachedDisplayId = -1
 
     /**
      * Server 入口。args 不再传 socketName 参数（用 stdin/stdout pipe 通信）。
@@ -157,6 +158,7 @@ object ServerMain {
             heldVd = vd
             heldReader = reader
             val displayId = vd.display?.displayId ?: -1
+            cachedDisplayId = displayId
             Log.i(TAG, "✅ VD created, displayId=$displayId")
 
             // 7: 注册 ImageReader.onImageAvailableListener
@@ -271,10 +273,10 @@ object ServerMain {
     }
 
     private fun runKeepAliveLoop(input: InputStream, out: OutputStream, reader: ImageReader) {
-        Log.i(TAG, "keepAlive started (ping + release + msg dispatch)")
+        Log.i(TAG, "keepAlive started (ping + release + touch + msg dispatch)")
         while (running && heldVd != null) {
             try {
-                val (msgType, _) = VDProtocol.readMessage(input)
+                val (msgType, payload) = VDProtocol.readMessage(input)
                 when (msgType) {
                     VDProtocol.MSG_PING -> {
                         try { VDProtocol.writeMessage(out, VDProtocol.MSG_PONG, VDProtocol.EMPTY_PAYLOAD) }
@@ -282,6 +284,18 @@ object ServerMain {
                     }
                     VDProtocol.MSG_FRAME_ACK -> {
                         ackCounter++
+                    }
+                    VDProtocol.MSG_TOUCH_DOWN -> {
+                        val ev = TouchEvent.fromByteArray(payload)
+                        injectMotionEvent(android.view.MotionEvent.ACTION_DOWN, ev.x, ev.y)
+                    }
+                    VDProtocol.MSG_TOUCH_MOVE -> {
+                        val ev = TouchEvent.fromByteArray(payload)
+                        injectMotionEvent(android.view.MotionEvent.ACTION_MOVE, ev.x, ev.y)
+                    }
+                    VDProtocol.MSG_TOUCH_UP -> {
+                        val ev = TouchEvent.fromByteArray(payload)
+                        injectMotionEvent(android.view.MotionEvent.ACTION_UP, ev.x, ev.y)
                     }
                     VDProtocol.MSG_RELEASE_VD -> {
                         Log.i(TAG, "Received RELEASE_VD, releasing VD and exiting...")
@@ -307,5 +321,77 @@ object ServerMain {
         heldReader = null
         // Looper.quit() 让 ImageListenerHandlerThread 自行退出
         try { android.os.Looper.myLooper()?.quitSafely() } catch (_: Exception) {}
+    }
+
+    // ===== IInputManager 反射缓存（避免每次触摸事件都做反射查找）=====
+    private var inputManagerInstance: Any? = null
+    private var injectMethod: java.lang.reflect.Method? = null
+    private var setDisplayIdMethod: java.lang.reflect.Method? = null
+    private var inputManagerInited = false
+
+    /**
+     * 使用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器
+     * （MAA-Meow / scrcpy 同款方案，零进程开销，支持高频触摸）
+     *
+     * 关键点：
+     *   1. InputManager.getInstance() 是 @hide API → 反射调用
+     *   2. MotionEvent.setDisplayId(int) 是 @hide API → 反射调用（API 30+ 有 public 版本，但反射兜底更安全）
+     *   3. injectInputEvent(event, mode) 是 @hide API → 反射调用
+     *   4. mode=0 (INJECT_INPUT_EVENT_MODE_ASYNC) 异步注入，不阻塞
+     *   5. shell uid 持有 INJECT_INPUT_EVENTS 权限，不会被拒绝
+     *
+     * 反射结果缓存到 inputManagerInstance / injectMethod / setDisplayIdMethod，
+     * 首次调用初始化，后续直接用缓存值，性能接近直接调用。
+     */
+    private fun injectMotionEvent(action: Int, x: Int, y: Int) {
+        val displayId = cachedDisplayId
+        if (displayId < 0) {
+            Log.w(TAG, "injectMotionEvent: displayId=$displayId, skip")
+            return
+        }
+
+        try {
+            // 首次调用：初始化反射缓存
+            if (!inputManagerInited) {
+                inputManagerInited = true
+                try {
+                    val imClass = Class.forName("android.hardware.input.InputManager")
+                    val getInstance = imClass.getDeclaredMethod("getInstance")
+                    getInstance.isAccessible = true
+                    inputManagerInstance = getInstance.invoke(null)
+                    injectMethod = imClass.getMethod("injectInputEvent",
+                        android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
+                    // MotionEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
+                    setDisplayIdMethod = android.view.MotionEvent::class.java
+                        .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+                    Log.i(TAG, "✅ IInputManager reflection initialized")
+                } catch (e: Exception) {
+                    Log.e(TAG, "IInputManager reflection init failed", e)
+                }
+            }
+
+            val im = inputManagerInstance ?: return
+            val inject = injectMethod ?: return
+            val setDisplayId = setDisplayIdMethod
+
+            // 构造 MotionEvent（6 参数版：downTime, eventTime, action, x, y, metaState）
+            val now = android.os.SystemClock.uptimeMillis()
+            val event = android.view.MotionEvent.obtain(
+                now, now, action,
+                x.toFloat(), y.toFloat(), 0
+            )
+            try {
+                // 设置 displayId → 注入到虚拟显示器而非主屏幕
+                setDisplayId?.invoke(event, displayId)
+                // 设置触摸源
+                event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
+                inject.invoke(im, event, 0)
+            } finally {
+                event.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "injectMotionEvent failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 }

@@ -47,6 +47,9 @@ object VDProtocol {
     const val MSG_RELEASE_VD_RESP = 6
     const val MSG_FRAME = 7
     const val MSG_FRAME_ACK = 8
+    const val MSG_TOUCH_DOWN = 9
+    const val MSG_TOUCH_MOVE = 10
+    const val MSG_TOUCH_UP = 11
 
     /** 空 payload（PING/PONG/RELEASE_VD/FRAMES_ACK 等占位） */
     val EMPTY_PAYLOAD = ByteArray(0)
@@ -292,5 +295,31 @@ data class FramePacket(
         result = 31 * result + jpegBytes.contentHashCode()
         result = 31 * result + frameIndex.hashCode()
         return result
+    }
+}
+
+/**
+ * 触摸事件（MSG_TOUCH_DOWN / MSG_TOUCH_MOVE / MSG_TOUCH_UP 的 payload）
+ *
+ * 仅传输 (x, y) 坐标（虚拟显示器坐标系），action 由消息类型区分。
+ * 编码方式：DataOutputStream 两个 Int（8 字节），不依赖 Parcel，简洁高效。
+ * server 端收到后用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器。
+ */
+data class TouchEvent(val x: Int, val y: Int) {
+    fun toByteArray(): ByteArray {
+        val bos = ByteArrayOutputStream(8)
+        DataOutputStream(bos).use { d ->
+            d.writeInt(x)
+            d.writeInt(y)
+        }
+        return bos.toByteArray()
+    }
+
+    companion object {
+        fun fromByteArray(data: ByteArray): TouchEvent {
+            DataInputStream(ByteArrayInputStream(data)).use { d ->
+                return TouchEvent(d.readInt(), d.readInt())
+            }
+        }
     }
 }

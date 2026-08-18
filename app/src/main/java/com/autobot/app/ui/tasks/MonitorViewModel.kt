@@ -15,7 +15,6 @@ import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.service.CompositionService
-import com.autobot.app.util.ShellExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -556,71 +555,31 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         Log.i(TAG, "Preview surface destroyed")
     }
 
-    // ===== 触摸手势追踪（修复：每个手势只发一次 input 命令，避免快速 Move 导致进程爆炸崩溃）=====
-    private var touchStartX = 0
-    private var touchStartY = 0
-    private var touchEndX = 0
-    private var touchEndY = 0
-    private var touchHasMoved = false
-
     /**
      * 触摸事件 - 按下
-     * 仅记录起点，不执行任何 input 命令
+     * 发送 MSG_TOUCH_DOWN 到 server 进程，server 用 IInputManager.injectInputEvent() 注入 MotionEvent
      * @param vx 虚拟显示器坐标 X
      * @param vy 虚拟显示器坐标 Y
      */
     fun onTouchDown(vx: Int, vy: Int) {
-        touchStartX = vx
-        touchStartY = vy
-        touchEndX = vx
-        touchEndY = vy
-        touchHasMoved = false
         addTouchMarker(vx.toFloat(), vy.toFloat())
+        compositionService.injectTouchDown(vx, vy)
     }
 
     /**
      * 触摸事件 - 移动
-     * 仅更新终点坐标，不执行任何 input 命令（避免快速 Move 生成大量 Shizuku 进程导致崩溃）
+     * 发送 MSG_TOUCH_MOVE 到 server 进程（零进程开销，可直接高频调用）
      */
     fun onTouchMove(fromX: Int, fromY: Int, toX: Int, toY: Int) {
-        touchEndX = toX
-        touchEndY = toY
-        if (toX != touchStartX || toY != touchStartY) {
-            touchHasMoved = true
-        }
+        compositionService.injectTouchMove(fromX, fromY, toX, toY)
     }
 
     /**
      * 触摸事件 - 抬起
-     * 在手势结束时执行一次 input 命令（tap 或 swipe），在 IO 线程异步执行
-     * 使用 --display <displayId> 将事件注入到虚拟显示器而非主屏幕
+     * 发送 MSG_TOUCH_UP 到 server 进程
      */
     fun onTouchUp(vx: Int, vy: Int) {
-        val startX = touchStartX
-        val startY = touchStartY
-        val endX = if (touchHasMoved) touchEndX else vx
-        val endY = if (touchHasMoved) touchEndY else vy
-        val moved = touchHasMoved
-        val displayId = compositionService.displayId
-
-        viewModelScope.launch(Dispatchers.IO) {
-            if (displayId <= 0) {
-                Log.w(TAG, "onTouchUp: displayId=$displayId, skip touch injection")
-                return@launch
-            }
-            try {
-                val cmd = if (moved) {
-                    // 滑动手势：input --display <id> swipe <x1> <y1> <x2> <y2> <duration>
-                    "input --display $displayId swipe $startX $startY $endX $endY 100"
-                } else {
-                    // 点击手势：input --display <id> tap <x> <y>
-                    "input --display $displayId tap $startX $startY"
-                }
-                ShellExecutor.execute(cmd, useShizuku = true, timeout = 2000)
-            } catch (e: Exception) {
-                Log.e(TAG, "Touch injection failed: ${e.message}", e)
-            }
-        }
+        compositionService.injectTouchUp(vx, vy)
     }
 
     /**

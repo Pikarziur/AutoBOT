@@ -7,11 +7,11 @@ import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.ShizukuProcessManager
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.server.FramePacket
+import com.autobot.app.server.TouchEvent
 import com.autobot.app.server.VDProtocol
 import com.autobot.app.server.VDRequest
 import com.autobot.app.server.VDResponse
 import com.autobot.app.third.DisplayManagerHelper
-import com.autobot.app.util.ShellExecutor
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -307,14 +307,35 @@ class CompositionService(private val context: Context) {
     }
 
     fun injectTouchDown(x: Int, y: Int) {
-        ShellExecutor.execute("input tap $x $y", useShizuku = true, timeout = 2000)
+        val proc = serverProcess ?: return
+        try {
+            VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_TOUCH_DOWN,
+                TouchEvent(x, y).toByteArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "injectTouchDown: write failed: ${e.message}")
+        }
     }
 
     fun injectTouchMove(fromX: Int, fromY: Int, toX: Int, toY: Int) {
-        ShellExecutor.execute("input swipe $fromX $fromY $toX $toY 100", useShizuku = true, timeout = 2000)
+        // MotionEvent 注入只需要当前坐标，fromX/fromY 不需要
+        val proc = serverProcess ?: return
+        try {
+            VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_TOUCH_MOVE,
+                TouchEvent(toX, toY).toByteArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "injectTouchMove: write failed: ${e.message}")
+        }
     }
 
-    fun injectTouchUp(x: Int, y: Int) {}
+    fun injectTouchUp(x: Int, y: Int) {
+        val proc = serverProcess ?: return
+        try {
+            VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_TOUCH_UP,
+                TouchEvent(x, y).toByteArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "injectTouchUp: write failed: ${e.message}")
+        }
+    }
 
     fun getFrameBufferBitmap(): Bitmap? = capturer?.getFrameBufferBitmap()
     fun getFrameCount(): Long = capturer?.getFrameCount() ?: 0L
