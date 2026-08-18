@@ -22,7 +22,7 @@
         android:layout_height="wrap_content"
         android:background="@color/surface"
         app:menu="@menu/bottom_nav_menu"
-        app:itemIconTint="@color/bottom_nav_selector"
+        app:itemIconSize="0dp"
         app:itemTextColor="@color/bottom_nav_selector"
         app:labelVisibilityMode="labeled"
         app:layout_constraintBottom_toBottomOf="parent"
