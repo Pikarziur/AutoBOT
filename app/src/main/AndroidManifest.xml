@@ -15,9 +15,49 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"
         tools:targetApi="33" />
 
+    <!-- ============================================================ -->
+    <!-- 以下权限对齐 MAA-Meow，虚拟显示器/Shizuku 场景必要或高度推荐 -->
+    <!-- ============================================================ -->
+    <!-- 悬浮窗：全屏模式下预览 SurfaceView 和后续扩展功能 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 前台服务运行期间防止 CPU 休眠，避免虚拟显示器画面冻结 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 13+ 通知分组相关（Shizuku 前台通知） -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"
+        tools:targetApi="33" />
+    <!-- 请求加入电池优化白名单：避免 Shizuku/虚拟显示器进程被系统查杀 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Shizuku 权限 -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V11" />
     <uses-permission android:name="rikka.shizuku.permission.API_V30" />
+
+    <!--
+        Android 11+ 包可见性：必须在 <queries> 中声明 Shizuku，
+        否则 PackageManager.resolveActivity / getLaunchIntentForPackage 会返回 null，
+        导致 ShizukuManager.openShizukuApp() 跳转失败。
+        这是 MAA-Meow 已有但 AutoBOT 之前缺失的关键配置。
+    -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="moe.shizuku.manager" />
+        <!-- 厂商自启动引导页（AutoStart 适配） -->
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.oppo.safe" />
+        <package android:name="com.vivo.permissionmanager" />
+        <package android:name="com.huawei.systemmanager" />
+        <package android:name="com.hihonor.systemmanager" />
+        <package android:name="com.samsung.android.lool" />
+        <package android:name="com.meizu.safe" />
+        <package android:name="com.zte.heartyservice" />
+        <!-- QUERY_ALL_PACKAGES 兜底 + 启动其他 App 到虚拟显示器 -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:name=".AutoBOTApp"
@@ -26,11 +66,16 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AutoBOT">
+        android:theme="@style/Theme.AutoBOT"
+        android:requestLegacyExternalStorage="true">
 
-        <!-- Shizuku Provider 配置 -->
-        <!-- 注意：ShizukuProvider.attachInfo() 内部强制校验 exported==true，
-             设为 false 会抛 IllegalStateException 导致 APP 启动即闪退 -->
+        <!--
+            Shizuku Provider 配置（必须与 MAA-Meow 完全对齐）
+            注意：
+              · ShizukuProvider.attachInfo() 内部强制校验 exported==true，
+                设为 false 会抛 IllegalStateException 导致 APP 启动即闪退
+              · permission=INTERACT_ACROSS_USERS_FULL 防止 Shizuku 内部跨用户权限报错
+        -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -39,16 +84,17 @@
             android:enabled="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- Shizuku 服务配置 -->
+        <!-- Shizuku 服务配置：max_parcel_size 1MB，与 MAA-Meow 一致 -->
         <meta-data
             android:name="rikka.shizuku.max_parcel_size"
             android:value="1048576" />
 
-        <!-- 主 Activity -->
+        <!-- 主 Activity：configChanges 声明 smallestScreenSize 避免横竖屏切换重建 Fragment/ViewModel -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:theme="@style/Theme.AutoBOT">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

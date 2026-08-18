@@ -8,18 +8,22 @@ import android.view.Surface
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.third.DisplayManagerHelper
+import com.autobot.app.third.Workarounds
 import com.autobot.app.util.ShellExecutor
 
 /**
  * 虚拟显示器合成服务
  *
- * 核心改进（参照 MAA-Meow）：
- * 1. 用 DisplayManagerHelper 替代 DisplayServiceShizuku
- *    - 通过 DisplayManager(Context) 包私有构造器 + FakeContext 实例化
- *    - 调用 DisplayManager.createVirtualDisplay(name, w, h, dpi, surface, flags) 6 参重载
- *    - 绕过 MIUI 隐藏 API 过滤（用公开类公开方法，不走 IDisplayManager AIDL 接口反射）
- * 2. packageName 传 "com.android.shell"（FakeContext），AttributionSource 用 SHELL_UID
- * 3. 通过 ShizukuBinderWrapper 包装 DisplayManagerGlobal 的 binder，使 binder 调用走 shell uid
+ * 核心改进（完全对齐 MAA-Meow + scrcpy 架构）：
+ *  1. 前置 Workarounds.apply()：注入 ActivityThread、mBoundApplication(com.android.shell)、
+ *     ConfigurationController(Android 12+)、mInitialApplication。没有这一步，
+ *     DisplayManager(Context) 构造器内部在三星/小米等设备会 NPE。
+ *  2. FakeContext 的 base 改为 Workarounds.getSystemContext()（系统级 Context），
+ *     不再使用 App 的 applicationContext。
+ *  3. DisplayManagerHelper 支持两条路径 fallback：
+ *     · 路径 A：ShizukuBinderWrapper 包装 binder + 替换 sInstance（推荐）
+ *     · 路径 B：纯 FakeContext 不修改全局（MAA-Meow 原始方式，兜底）
+ *  4. 错误消息根据 logcat 根因进行分级，而不是笼统的"创建失败"。
  *
  * 权限路径：
  *  - 仅依赖 Shizuku 授权（shell uid 持有 MANAGE_DISPLAYS 系统级权限）
@@ -28,7 +32,7 @@ import com.autobot.app.util.ShellExecutor
 class CompositionService(private val context: Context) {
 
     companion object {
-        private const val TAG = "CompositionService"
+        private const val TAG = "CompositionSvc"
 
         // 虚拟显示器默认分辨率（竖屏）
         const val DEFAULT_WIDTH = 540
@@ -64,11 +68,12 @@ class CompositionService(private val context: Context) {
     /**
      * 启动虚拟显示器
      *
-     * 步骤：
+     * 步骤（新增 Workarounds 前置步骤）：
+     * 0. Workarounds.apply() → FakeContext.get() 准备系统环境（关键！）
      * 1. 校验 Shizuku 已授权
      * 2. NativeCapturer.setupNativeCapturer(w, h) 拿到 Surface
-     * 3. DisplayManagerHelper.createVirtualDisplay(name, w, h, dpi, surface, flags)
-     *    用 DisplayManager 公开 API + Shizuku 包装的 binder 创建虚拟显示器
+     * 3. DisplayManagerHelper.init(context) 路径 A：尝试替换 sInstance
+     * 4. DisplayManagerHelper.createVirtualDisplay → 路径 A 失败自动降级路径 B
      */
     fun startVirtualDisplay(width: Int = DEFAULT_WIDTH,
                             height: Int = DEFAULT_HEIGHT): Pair<Surface?, String> {
@@ -77,16 +82,42 @@ class CompositionService(private val context: Context) {
             return displaySurface to ""
         }
 
-        // 1. Shizuku 权限校验
-        if (!ShizukuManager.isShizukuConnected()) {
-            val msg = "Shizuku 服务未连接，请打开 Shizuku App 并通过 ADB 启动服务"
-            Log.e(TAG, msg)
+        // 步骤 0：最最最先准备 ActivityThread 系统环境（否则 FakeContext.getSystemContext() 拿不到）
+        try {
+            Workarounds.apply()
+            Log.i(TAG, "step0 Workarounds.apply() OK")
+        } catch (t: Throwable) {
+            val msg = "系统环境准备失败: ${t.javaClass.simpleName}: ${t.message} (详见 logcat Workarounds 标签)"
+            Log.e(TAG, "step0 FAIL: $msg", t)
             return null to msg
         }
-        if (!ShizukuManager.isShizukuGranted()) {
-            val msg = "Shizuku 未授权，请在设置页面点击授权按钮"
-            Log.e(TAG, msg)
-            return null to msg
+
+        // 1. Shizuku 权限校验（详细诊断，不再笼统"未授权"）
+        val diag = ShizukuManager.diagnoseShizuku(context)
+        when (diag) {
+            ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED -> {
+                val msg = "Shizuku 未安装：请先安装 Shizuku App（rikka.shizuku / moe.shizuku.privileged.api）"
+                Log.e(TAG, msg); return null to msg
+            }
+            ShizukuManager.ShizukuDiagnosis.NOT_CONNECTED -> {
+                val msg = "Shizuku 未连接：请打开 Shizuku App 并通过「无线调试」或「ADB 命令」启动服务。" +
+                        "注意：用 Root 模式启动 Shizuku 在 Android 12+ 上会触发" +
+                        "\"packageName must match the calling uid\" 的 SecurityException，" +
+                        "必须用 ADB/无线调试 模式启动 Shizuku（参考 MAA-Meow issue #9）。"
+                Log.e(TAG, msg); return null to msg
+            }
+            ShizukuManager.ShizukuDiagnosis.NOT_GRANTED -> {
+                val msg = "Shizuku 已连接但未授权：请在设置页面点击「授权 Shizuku」按钮，" +
+                        "或在 Shizuku App 的「已授权的应用」中手动添加本应用。"
+                Log.e(TAG, msg); return null to msg
+            }
+            ShizukuManager.ShizukuDiagnosis.UNKNOWN_ERROR -> {
+                val msg = "Shizuku 状态异常：请重启 Shizuku 服务后重试"
+                Log.e(TAG, msg); return null to msg
+            }
+            ShizukuManager.ShizukuDiagnosis.OK -> {
+                Log.i(TAG, "step1 Shizuku OK")
+            }
         }
 
         this.width = width
@@ -94,28 +125,45 @@ class CompositionService(private val context: Context) {
 
         return try {
             // 2. 初始化 Native 层图像读取器，拿到承载画面的 Surface
+            Log.i(TAG, "step2 setupNativeCapturer(${width}x${height}) ...")
             val cap = NativeCapturer()
             val surface = cap.setupNativeCapturer(width, height)
             if (surface == null) {
-                val msg = "Native 图像采集器初始化失败，请确认 minSdkVersion>=26 且 so 库已加载"
-                Log.e(TAG, msg)
+                val msg = "Native 图像采集器初始化失败：setupNativeCapturer 返回 null。" +
+                        "排查：①minSdkVersion 是否 >= 26（AImageReader 要求） ②libautobot_capturer.so 是否被正确打包进 APK" +
+                        " ③Surface 纹理缓冲格式是否被此机型 GPU 支持（GL_TEXTURE_EXTERNAL_OES）"
+                Log.e(TAG, "step2 FAIL: $msg")
                 return null to msg
             }
             capturer = cap
             displaySurface = surface
+            Log.i(TAG, "step2 OK: surface=$surface")
 
-            // 3. 初始化 DisplayManagerHelper（替换 DisplayManagerGlobal 单例为 Shizuku 包装版本）
+            // 3 & 4. DisplayManagerHelper 内部会走 A → B fallback 路径
+            Log.i(TAG, "step3 DisplayManagerHelper.init() ...")
             DisplayManagerHelper.init(context)
 
-            // 4. 用 DisplayManager 公开 API 创建虚拟显示器
+            Log.i(TAG, "step4 DisplayManagerHelper.createVirtualDisplay() ...")
             val flags = DisplayManagerHelper.buildDisplayFlags()
             val vd = DisplayManagerHelper.createVirtualDisplay(
                 context, VIRTUAL_DISPLAY_NAME, width, height, DEFAULT_DPI, surface, flags
             )
 
             if (vd == null) {
-                val msg = "虚拟显示器创建失败。可能原因：①Shizuku binder 包装失败 ②ROM 限制 ③槽位已满"
-                Log.e(TAG, msg)
+                val msg = "虚拟显示器创建失败。系统侧（DisplayManagerService / system_server）返回了空或抛出异常。\n" +
+                        "请按以下顺序排查：\n" +
+                        "  ① 打开 logcat 筛选标签 DisplayMgrHelper / CompositionSvc / DisplayManagerService，\n" +
+                        "     查看 Path A 在哪一步失败（通常是 step6 清除 FINAL 字段失败）\n" +
+                        "     以及 Path B 抛出的具体 Exception 类型和 message。\n" +
+                        "  ② 若看到 SecurityException: \"packageName must match the calling uid\"，\n" +
+                        "     说明你是用 Root 模式启动的 Shizuku，请改回「无线调试 / ADB」模式启动。\n" +
+                        "  ③ 若看到 IllegalStateException: \"Need MANAGE_DISPLAYS permission\"，\n" +
+                        "     说明 Shizuku 授权后 shell UID 仍被 ROM 限制（部分华为/荣耀/OPPO 定制系统），\n" +
+                        "     可尝试在 Shizuku App 开启「ADB 安全设置」或升级 Shizuku 到最新版。\n" +
+                        "  ④ 若看到 \"no createVirtualDisplay method found\" / \"NotSuchMethod\"，\n" +
+                        "     说明此机型的 DisplayManager 包私有构造器被 ROM 改写；\n" +
+                        "     未来可考虑升级为 Shizuku.newProcess() 方式（完全照搬 MAA-Meow 的 scrcpy 服务架构）。"
+                Log.e(TAG, "step4 FAIL: $msg")
                 cap.releaseNativeCapturer()
                 capturer = null
                 displaySurface = null
@@ -123,10 +171,15 @@ class CompositionService(private val context: Context) {
             }
             virtualDisplay = vd
 
-            Log.i(TAG, "VirtualDisplay started: ${width}x${height} displayId=${vd.display?.displayId}")
+            Log.i(TAG, "✅ VirtualDisplay started: ${width}x${height} displayId=${vd.display?.displayId}")
             surface to ""
         } catch (e: Exception) {
-            val msg = "虚拟显示器启动异常: ${e.javaClass.simpleName}: ${e.message}"
+            var cause: Throwable? = e
+            while (cause?.cause != null && cause.cause !== cause) cause = cause.cause
+            val detail = if (cause != null && cause !== e) {
+                "（根因：${cause.javaClass.simpleName}: ${cause.message}）"
+            } else ""
+            val msg = "虚拟显示器启动异常: ${e.javaClass.simpleName}: ${e.message} $detail"
             Log.e(TAG, msg, e)
             try {
                 virtualDisplay?.release()
