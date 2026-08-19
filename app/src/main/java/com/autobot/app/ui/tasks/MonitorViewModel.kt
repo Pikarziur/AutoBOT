@@ -381,46 +381,51 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        // -------- 目标 App 前置启动 & 隔离到 VD 前台 --------
-        // MAA-Meow 的点击/坐标都以 VD 上的目标 App 为目标。
-        // 如果用户没有先点"▶ 启动"按钮启动淘宝到 VD，脚本里 `input tap` 仍然会打在
-        // display 0 前台 App（AutoBOT 主界面）上。所以这里做**兜底自动启动/隔离**。
+        // 若 VD 未启动目标 App，则在 submitTask 之前先启动+隔离淘宝（launchAppWithOrientationAdaptation
+        // 是 suspend，必须放到 viewModelScope.launch 的协程体内；不能用 runBlocking）
         val targetPkg = _vdTargetPackage.value
             ?: com.autobot.app.manager.AppManager.DEFAULT_PACKAGE_TAOBAO
         val needsRelaunch = _vdTargetPackage.value == null
         if (needsRelaunch) {
             _executeMessage.value = "自动启动目标 App (淘宝) 到虚拟显示器，请稍候..."
             appendLog("[${stamp()}] ⟶ 检测到 VD 前台无目标 App，自动启动到 display=$vdDisplayId")
-            val (ok, msg) = runBlocking {
-                launchAppWithOrientationAdaptation(
-                    context = getApplication<android.app.Application>(),
-                    packageName = targetPkg
-                )
-            }
-            if (!ok) {
-                _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
-                appendLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
-                return
-            }
-        }
-
-        // -------- 构造注入到 .sh 脚本的环境变量 --------
-        val (vdW, vdH) = _vdTargetSize.value
-            ?: _displaySize.value.takeIf { it.first > 0 }
-            ?: (CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT)
-        val taskEnv = buildMap {
-            put("AUTOBOT_VD_DISPLAY_ID", vdDisplayId.toString())
-            put("AUTOBOT_VD_WIDTH", vdW.toString())
-            put("AUTOBOT_VD_HEIGHT", vdH.toString())
-            put("AUTOBOT_TARGET_PACKAGE", targetPkg)
         }
 
         _isExecuting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // -------- 目标 App 前置启动 & 隔离到 VD 前台（协程内） --------
+                // MAA-Meow 的点击/坐标都以 VD 上的目标 App 为目标。
+                // 如果用户没有先点"▶ 启动"按钮启动淘宝到 VD，脚本里 `input tap` 仍然会打在
+                // display 0 前台 App（AutoBOT 主界面）上。所以这里做**兜底自动启动/隔离**。
+                if (needsRelaunch) {
+                    val (ok, msg) = launchAppWithOrientationAdaptation(
+                        context = getApplication<android.app.Application>(),
+                        packageName = targetPkg
+                    )
+                    if (!ok) {
+                        _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
+                        appendLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
+                        return@launch
+                    }
+                }
+
+                // -------- 构造注入到 .sh 脚本的环境变量 --------
+                // 注：vdTargetSize / displaySize 可能在兜底启动后被更新，必须在 needsRelaunch
+                // 分支之后再读取。
+                val (vdW, vdH) = _vdTargetSize.value
+                    ?: _displaySize.value.takeIf { it.first > 0 }
+                    ?: (CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT)
+                val taskEnv = buildMap {
+                    put("AUTOBOT_VD_DISPLAY_ID", vdDisplayId.toString())
+                    put("AUTOBOT_VD_WIDTH", vdW.toString())
+                    put("AUTOBOT_VD_HEIGHT", vdH.toString())
+                    put("AUTOBOT_TARGET_PACKAGE", targetPkg)
+                }
+
                 // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScriptStreaming）
-                // - displayId：再次进入 task，TaskManager 内部会合并为 AUTOBOT_VD_DISPLAY_ID
-                // - extraEnv：vdW/vdH/targetPkg 由脚本使用
+                // - displayId：TaskManager 内部会合并为 AUTOBOT_VD_DISPLAY_ID
+                // - extraEnv：vdW/vdH/targetPkg 供脚本按 VD 坐标系操作目标 App
                 TaskManager.submitTask(
                     name = task.name,
                     command = task.scriptPath,
