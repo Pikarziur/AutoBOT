@@ -9,13 +9,13 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -27,9 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
@@ -129,11 +128,15 @@ class MainActivity : AppCompatActivity() {
 }
 
 /**
- * 底部导航 Tab（纯文字，无图标，对齐 MAA-Meow）
+ * 底部导航 Tab（Material 3：图标 + 文字标签，对齐 MAA-Meow）
+ *
+ * 图标选用 Material Icons Outlined 风格（线性描边），与 M3 浅色主题搭配：
+ *   - TASKS → PlayCircle：后台运行任务的"播放/启动"语义
+ *   - SETTINGS → Settings：齿轮，通用设置图标
  */
-private enum class MainTab(val label: String) {
-    TASKS("后台任务"),
-    SETTINGS("设置")
+private enum class MainTab(val label: String, val icon: ImageVector) {
+    TASKS("后台任务", Icons.Outlined.PlayCircle),
+    SETTINGS("设置", Icons.Outlined.Settings)
 }
 
 /**
@@ -177,15 +180,15 @@ private fun MainScreen() {
 }
 
 /**
- * 底部导航栏（纯文字 Tab，无图标，去掉选中色块）
+ * 底部导航栏（Material 3 规范：图标 + 文字 + 药丸形 indicator）
  *
- * 复刻原 activity_main.xml 的 BottomNavigationView 样式：
- *   - itemIconSize=0dp → icon 传 0dp Box 占位
- *   - itemActiveIndicatorStyle 透明 → indicatorColor = Color.Transparent
- *   - 文字水平居中 → Text.fillMaxWidth + textAlign Center
- *   - 选中文字蓝色 / 未选中文字灰色 → selectedTextColor / unselectedTextColor
- *   - 选中时在文字下方绘制与文字同色（primary 蓝）的下划线，
- *     替代默认 indicator（默认位置在 icon 后/文字上方，无法移动）
+ * 配色使用项目主题色（primary 蓝）：
+ *   - 选中态：图标 + 文字 = primary（深蓝 #2B6BCA），indicator = primaryContainer（浅蓝 #E5F1FF）
+ *   - 未选中：图标 + 文字 = onSurfaceVariant（灰 #8A8580）
+ *
+ * NavigationBar 容器：
+ *   - containerColor = surface（暖白 #F9F7F3）
+ *   - tonalElevation = 0.dp（关闭 M3 默认表面色调提升，保持纯白底）
  */
 @Composable
 private fun BottomNavBar(
@@ -198,37 +201,24 @@ private fun BottomNavBar(
         tonalElevation = 0.dp
     ) {
         MainTab.entries.forEach { tab ->
-            val selected = currentTab == tab
             NavigationBarItem(
-                selected = selected,
+                selected = currentTab == tab,
                 onClick = { onTabSelected(tab) },
-                // 无图标：传 0dp 的 Box 占位，让 label 居中显示
-                icon = { Box(Modifier.size(0.dp)) },
+                icon = { Icon(tab.icon, contentDescription = tab.label) },
                 label = {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = tab.label,
-                            textAlign = TextAlign.Center
-                        )
-                        // 选中时在文字下方显示下划线，颜色与选中文字一致（primary 蓝）
-                        if (selected) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(top = 2.dp)
-                                    .width(16.dp)
-                                    .height(2.dp)
-                                    .background(MaterialTheme.colorScheme.primary)
-                            )
-                        }
-                    }
+                    Text(
+                        text = tab.label,
+                        textAlign = TextAlign.Center
+                    )
                 },
                 colors = NavigationBarItemDefaults.colors(
+                    // 选中态：图标 + 文字用项目主色 primary 蓝，indicator 用 primaryContainer 浅蓝
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    indicatorColor = Color.Transparent  // 去掉默认选中背景色块
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    // 未选中：灰色辅助文字色
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             )
         }
