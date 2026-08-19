@@ -720,9 +720,11 @@ private fun AppIconDrawable(
 /**
  * 任务/日志 选项卡区域
  *
- * TabRow(M3) + 内容区：
- *   - Tab 0 "任务"：模式切换 + 模式对应内容（SH-ADB / 截图识别占位）
- *   - Tab 1 "日志"：实时显示 TaskManager 输出的日志
+ * 整体包裹在白色 Card 内，形成一个独立的"组件"视觉单元：
+ *   - Card：白底 + 12dp 圆角 + 1dp 阴影（与项目其他卡片样式一致）
+ *   - TabRow(M3) + 内容区：
+ *     - Tab 0 "任务"：模式切换 + 模式对应内容（SH-ADB / 截图识别占位）
+ *     - Tab 1 "日志"：实时显示脚本执行日志
  *
  * 选中状态由本组件 remember 持有，无需提升到 ViewModel（与 VM 业务状态无关）
  */
@@ -733,28 +735,35 @@ private fun TasksTabsSection(
 ) {
     var selectedTab by remember { mutableStateOf(0) }  // 0=任务, 1=日志
 
-    Column(modifier = modifier) {
-        TabRow(
-            selectedTabIndex = selectedTab,
-            containerColor = Color.Transparent,
-            contentColor = MaterialTheme.colorScheme.primary,
-            divider = {}
-        ) {
-            Tab(
-                selected = selectedTab == 0,
-                onClick = { selectedTab = 0 },
-                text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
-            )
-            Tab(
-                selected = selectedTab == 1,
-                onClick = { selectedTab = 1 },
-                text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
-            )
-        }
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.colors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.primary,
+                divider = {}
+            ) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
+                )
+            }
 
-        when (selectedTab) {
-            0 -> TasksTabContent(vm)
-            1 -> LogsTabContent(vm)
+            when (selectedTab) {
+                0 -> TasksTabContent(vm)
+                1 -> LogsTabContent(vm)
+            }
         }
     }
 }
@@ -763,9 +772,12 @@ private fun TasksTabsSection(
  * 任务标签页
  *
  * 布局自上而下：
- *   1. 模式选择（adb shell / 截图识别），竖向 RadioButton + 文本，单选交互
+ *   1. 模式选择（竖向 RadioButton + 文本，单选交互）
+ *      - adb shell
+ *      - [SH-ADB 下拉框 + 添加/删除按钮]（仅 SH-ADB 模式下显示，夹在两个 RadioButton 之间）
+ *      - 截图识别
  *   2. 模式对应内容区（weight(1f) 占满中部空间）
- *      - SH-ADB：脚本下拉框 + 添加/删除按钮
+ *      - SH-ADB：无额外内容（下拉框已移至 RadioButton 之间）
  *      - 截图识别：占位文本
  *   3. 底部执行任务按钮（跨模式，根据当前模式启用/禁用）
  *
@@ -782,6 +794,8 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 1. 模式选择（竖向 RadioButton） ----------
+        // 布局：adb shell → [SH-ADB 下拉框+按钮] → 截图识别
+        // 下拉框+按钮夹在两个 RadioButton 之间，视觉上归属 adb shell 模式
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -793,6 +807,12 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
                 onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) }
             )
+
+            // SH-ADB 模式下：在 adb shell 与 截图识别 之间渲染脚本下拉框 + 添加/删除按钮
+            if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
+                ShAdbModeContent(vm)
+            }
+
             ModeRadioButtonRow(
                 label = "截图识别",
                 selected = selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION,
@@ -801,28 +821,27 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         }
 
         // ---------- 2. 模式对应内容区 ----------
+        // SH-ADB：下拉框已移至 RadioButton 之间，此处无额外内容（保留弹性空间）
+        // 截图识别：占位文本
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            when (selectedMode) {
-                MonitorViewModel.TaskMode.SH_ADB -> ShAdbModeContent(vm)
-                MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> {
-                    // 截图识别模式占位（后续版本完善）
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "截图识别模式（功能开发中）",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = "后续版本将完善此功能",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+            if (selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) {
+                // 截图识别模式占位（后续版本完善）
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "截图识别模式（功能开发中）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "后续版本将完善此功能",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
