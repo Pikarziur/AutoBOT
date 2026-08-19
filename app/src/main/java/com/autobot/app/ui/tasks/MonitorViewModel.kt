@@ -99,6 +99,22 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isLandscape = MutableStateFlow(false)
     val isLandscape: StateFlow<Boolean> = _isLandscape.asStateFlow()
 
+    /**
+     * 当前 VD 中已启动 & 隔离到前台的目标 App 包名。
+     *   - 例如："com.taobao.taobao"
+     *   - 未启动目标 App 时为 null。
+     *   - executeShAdbTask 执行前据此判断是否需要先把目标 App 启动到 VD 前台。
+     */
+    private val _vdTargetPackage = MutableStateFlow<String?>(null)
+    val vdTargetPackage: StateFlow<String?> = _vdTargetPackage.asStateFlow()
+
+    /**
+     * 当前 VD 分辨率（执行脚本时注入到 AUTOBOT_VD_WIDTH / AUTOBOT_VD_HEIGHT 环境变量，
+     * 便于脚本中按 VD 坐标系计算点击位置，避免写死主屏 1080p 坐标打到主屏上）。
+     */
+    private val _vdTargetSize = MutableStateFlow<Pair<Int, Int>?>(null)
+    val vdTargetSize: StateFlow<Pair<Int, Int>?> = _vdTargetSize.asStateFlow()
+
     // ==================== 模式选择 / SH 脚本任务 ====================
 
     /** 任务执行模式枚举 */
@@ -326,6 +342,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     /**
      * SH-ADB 模式：执行选中的 SH 脚本任务
      *
+     * 前置保障（MAA-Meow 相同风格的"操作只映射 VD 目标 App"）：
+     *   1. VD 必须运行（executeTask 公共入口已通过 displayId>0 检查）
+     *   2. 必须已启动"目标 App=淘宝"到 VD 前台（通过 TaskIsolator 从 display 0 移走）
+     *      未启动则**自动调用 launchAppWithOrientationAdaptation(DEFAULT_PACKAGE_TAOBAO)**
+     *   3. 脚本执行时注入 AUTOBOT_VD_* 环境变量，脚本按这些变量带 --display 参数
+     *      - AUTOBOT_VD_DISPLAY_ID：`am start --display $VDID ...` 启动到 VD
+     *        + `input --display $VDID tap x y` 点 VD 画面（不会打主屏 AutoBOT）
+     *      - AUTOBOT_VD_WIDTH / AUTOBOT_VD_HEIGHT：VD 分辨率（坐标计算基准）
+     *      - AUTOBOT_TARGET_PACKAGE：目标 App 包名
+     *
      * @param vdDisplayId 已就绪的虚拟显示器 ID（> 0），注入 AUTOBOT_VD_DISPLAY_ID 环境变量
      */
     private fun executeShAdbTask(vdDisplayId: Int) {
@@ -355,22 +381,58 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        // -------- 目标 App 前置启动 & 隔离到 VD 前台 --------
+        // MAA-Meow 的点击/坐标都以 VD 上的目标 App 为目标。
+        // 如果用户没有先点"▶ 启动"按钮启动淘宝到 VD，脚本里 `input tap` 仍然会打在
+        // display 0 前台 App（AutoBOT 主界面）上。所以这里做**兜底自动启动/隔离**。
+        val targetPkg = _vdTargetPackage.value
+            ?: com.autobot.app.manager.AppManager.DEFAULT_PACKAGE_TAOBAO
+        val needsRelaunch = _vdTargetPackage.value == null
+        if (needsRelaunch) {
+            _executeMessage.value = "自动启动目标 App (淘宝) 到虚拟显示器，请稍候..."
+            appendLog("[${stamp()}] ⟶ 检测到 VD 前台无目标 App，自动启动到 display=$vdDisplayId")
+            val (ok, msg) = runBlocking {
+                launchAppWithOrientationAdaptation(
+                    context = getApplication<android.app.Application>(),
+                    packageName = targetPkg
+                )
+            }
+            if (!ok) {
+                _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
+                appendLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
+                return
+            }
+        }
+
+        // -------- 构造注入到 .sh 脚本的环境变量 --------
+        val (vdW, vdH) = _vdTargetSize.value
+            ?: _displaySize.value.takeIf { it.first > 0 }
+            ?: (CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT)
+        val taskEnv = buildMap {
+            put("AUTOBOT_VD_DISPLAY_ID", vdDisplayId.toString())
+            put("AUTOBOT_VD_WIDTH", vdW.toString())
+            put("AUTOBOT_VD_HEIGHT", vdH.toString())
+            put("AUTOBOT_TARGET_PACKAGE", targetPkg)
+        }
+
         _isExecuting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScriptStreaming）
-                // displayId：脚本 .sh 中通过 $AUTOBOT_VD_DISPLAY_ID 使用
-                //   - am start --display $AUTOBOT_VD_DISPLAY_ID -n pkg/.Act 启动到 VD
-                //   - input --display $AUTOBOT_VD_DISPLAY_ID tap x y 在 VD 画面上点击
+                // - displayId：再次进入 task，TaskManager 内部会合并为 AUTOBOT_VD_DISPLAY_ID
+                // - extraEnv：vdW/vdH/targetPkg 由脚本使用
                 TaskManager.submitTask(
                     name = task.name,
                     command = task.scriptPath,
                     type = TaskType.SCRIPT,
                     useShizuku = true,
-                    displayId = vdDisplayId
+                    displayId = vdDisplayId,
+                    extraEnv = taskEnv
                 )
                 _executeMessage.value = "任务已启动：${task.name}（映射到显示器 #$vdDisplayId）"
-                Log.i(TAG, "SH-ADB task submitted: ${task.name} -> ${task.scriptPath}, vd=$vdDisplayId")
+                Log.i(TAG,
+                    "SH-ADB task submitted: ${task.name} -> ${task.scriptPath}, vd=$vdDisplayId, " +
+                            "target=$targetPkg, size=${vdW}x$vdH")
             } catch (e: Exception) {
                 Log.e(TAG, "executeShAdbTask failed", e)
                 _executeMessage.value = "任务启动失败：${e.message}"
@@ -514,6 +576,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             Log.i(TAG, "Force restart VD: stopping existing display before re-launch")
             compositionService.stopVirtualDisplay()
             _isRunning.value = false
+            // 重启动时清理旧的目标 App 记录（等 isolateToVirtualDisplay 成功后再赋值）
+            _vdTargetPackage.value = null
+            _vdTargetSize.value = null
         }
         val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
         if (errMsg.isBlank()) {
@@ -546,17 +611,36 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         // 6. 启动 App 到虚拟显示器
         val ok = AppManager.launchApp(context, packageName, dId)
-        return if (ok) {
-            val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
-            _executeMessage.value = r.second
-            appendLog("[${stamp()}] ✓ ${r.second}, pkg=$packageName, display=$dId")
-            r
+        val launchResult = if (ok) {
+            // 7. TaskIsolator.isolateToVirtualDisplay()
+            //    am start --display 之后系统可能仍把目标 App 的 task 调度回 display 0（AMS 策略），
+            //    造成 VD 里只显示 AutoBOT，input 注入落到 AutoBOT 而非目标 App。
+            //    这里等待 1.5s 后 dumpsys 找到 display 0 上残留的目标 task，通过 am stack move-task
+            //    （Android 10-）或 am task move-task（Android 11+）移回 VD stack，保证 VD 前台=目标 App。
+            val (moved, detail) = com.autobot.app.third.TaskIsolator.isolateToVirtualDisplay(
+                packageName = packageName,
+                vdDisplayId = dId,
+                waitSettle = 1500L,
+                useShizuku = true
+            )
+            val msg = "已启动到虚拟显示器 (${targetW}x${targetH})" +
+                    if (moved) "，任务隔离完成：$detail" else "，任务隔离跳过：$detail"
+            val success = true to msg
+            _executeMessage.value = success.second
+            appendLog("[${stamp()}] ✓ 已启动 pkg=$packageName 到 display=$dId（任务隔离结果：$detail）")
+            success
         } else {
             val r = false to "App 启动命令失败，请确认目标应用已安装"
             _executeMessage.value = r.second
             appendLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
             r
         }
+        // 启动/隔离成功后，把目标包名写入 _vdTargetPackage，供 executeShAdbTask 判重 & 注入环境变量
+        if (launchResult.first) {
+            _vdTargetPackage.value = packageName
+            _vdTargetSize.value = targetW to targetH
+        }
+        return launchResult
     }
 
     /**

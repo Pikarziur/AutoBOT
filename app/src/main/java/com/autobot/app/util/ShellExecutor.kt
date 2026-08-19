@@ -140,21 +140,17 @@ object ShellExecutor {
             return ShellResult(-1, "", "Script file not found or cannot be staged: $scriptPath")
         }
 
-        // 组装命令：sh scriptPath args...
-        val command = buildString {
-            append("sh ")
-            append(effectivePath)
-            if (args.isNotEmpty()) {
-                append(" ")
-                append(args.joinToString(" "))
-            }
-        }
+        // ★VD 二次保险 wrapper：与 executeScriptStreaming 一致
+        val finalCmd = buildWrappedScriptCommand(effectivePath, args, env)
+        val tmpWrapper = finalCmd.second
 
         try {
-            return execute(command, useShizuku, env, timeout)
+            return execute(finalCmd.first, useShizuku, env, timeout)
         } finally {
-            // 若使用了临时文件，执行结束后清理
             maybeCleanupTmpScript(effectivePath, scriptPath, useShizuku)
+            tmpWrapper?.let {
+                try { File(it).delete() } catch (_: Exception) {}
+            }
         }
     }
 
@@ -185,23 +181,25 @@ object ShellExecutor {
             return -1
         }
 
-        val command = buildString {
-            append("sh ")
-            append(effectivePath)
-            if (args.isNotEmpty()) {
-                append(" ")
-                append(args.joinToString(" "))
-            }
-        }
+        // ★VD 操作二次保险（AutoBOT-specific wrapper）★：
+        // 当 env 中存在 AUTOBOT_VD_DISPLAY_ID 时，生成 wrapper 脚本，
+        // 为用户脚本中每行 `am start` / `am instrument` / `input` / `uiautomator` 等
+        // 没有显式带 `--display` 的命令自动插入 --display。
+        // 这样即使脚本作者忘记写 `--display $VDID`，也不会误点主屏 AutoBOT。
+        val finalCmd = buildWrappedScriptCommand(effectivePath, args, env)
+        val tmpWrapper = finalCmd.second  // 非 null 时需 finally 清理
 
         val exit = try {
             executeStreaming(
-                command, useShizuku, env, timeout,
+                finalCmd.first, useShizuku, env, timeout,
                 onStdoutLine = onStdoutLine,
                 onStderrLine = onStderrLine
             )
         } finally {
             maybeCleanupTmpScript(effectivePath, scriptPath, useShizuku)
+            tmpWrapper?.let {
+                try { File(it).delete() } catch (_: Exception) {}
+            }
         }
         return exit
     }
@@ -308,6 +306,189 @@ object ShellExecutor {
             Log.e(TAG, "rawOneShotShizuku failed", e)
             -1
         }
+    }
+
+    // 包装脚本中，需要自动注入 --display 的命令前缀（行首关键字）
+    private val VD_DISPLAY_CMDS = arrayOf(
+        "am start",
+        "am instrument",
+        "am start-foreground-service",
+        "am startservice",
+        "am broadcast",
+        "input ",
+        "input\t",
+        "uiautomator"
+    )
+
+    /**
+     * 把 sh 脚本改写成"自动带 --display $AUTOBOT_VD_DISPLAY_ID"的 wrapper 版本。
+     *
+     * 返回值 Pair<执行命令字符串, 可选的临时 wrapper 路径>：
+     *   - 若 env 中没有 AUTOBOT_VD_DISPLAY_ID：返回 `sh <path> <args>`，wrapper=null
+     *   - 若有：在 tmp 目录生成包装脚本，把原始脚本按行处理，命中 [VD_DISPLAY_CMDS] 且
+     *           行内未出现 `--display` 时自动插入 --display $AUTOBOT_VD_DISPLAY_ID；
+     *           返回 `sh <wrapper> <args>` 和 wrapper 文件路径（供 finally 清理）
+     */
+    private fun buildWrappedScriptCommand(
+        scriptPath: String,
+        args: Array<out String>,
+        env: Map<String, String>
+    ): Pair<String, String?> {
+        val vdId = env["AUTOBOT_VD_DISPLAY_ID"]
+        if (vdId.isNullOrBlank()) {
+            val cmd = buildString {
+                append("sh ")
+                append(scriptPath)
+                if (args.isNotEmpty()) {
+                    append(" ")
+                    append(args.joinToString(" "))
+                }
+            }
+            return cmd to null
+        }
+
+        // 生成 wrapper
+        val src = File(scriptPath)
+        if (!src.exists()) {
+            return "sh $scriptPath" to null
+        }
+
+        val wrapperDir = File(TMP_SCRIPT_DIR)
+        val wrapperName =
+            "wrapper_${UUID.randomUUID().toString().substring(0, 8)}_${src.name}"
+        val wrapperFile = File(wrapperDir, wrapperName)
+
+        // 写 wrapper：逐行处理
+        val wrapped = try {
+            val safeVdId = vdId
+            val lines = src.readLines()
+            val sb = StringBuilder(lines.size * 80 + 256)
+            // 首行保留 shebang / 或 #!/system/bin/sh，否则写默认 sh
+            val first = lines.firstOrNull()
+            if (first?.startsWith("#!") == true) {
+                sb.append(first).append('\n')
+                lines.drop(1)
+            } else {
+                sb.append("#!/system/bin/sh\n")
+                lines
+            }.forEach { rawLine ->
+                val line = appendDisplayToCommandLine(rawLine, safeVdId)
+                sb.append(line).append('\n')
+            }
+            sb.toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "build wrapper failed, fallback original script", e)
+            val cmd = buildString {
+                append("sh ")
+                append(scriptPath)
+                if (args.isNotEmpty()) {
+                    append(" ")
+                    append(args.joinToString(" "))
+                }
+            }
+            return cmd to null
+        }
+
+        // 写 wrapper 到 wrapperFile（优先 app 直接写；失败则 fallback Shizuku base64，
+        // 与 maybeCopyScriptToTmpForShizuku 的路径2 一致）
+        val writeOk = try {
+            if (!wrapperDir.exists()) wrapperDir.mkdirs()
+            wrapperFile.writeText(wrapped)
+            wrapperFile.setExecutable(true, false)
+            wrapperFile.canRead()
+        } catch (_: Exception) { false }
+
+        val finalWrapperPath = if (writeOk) {
+            wrapperFile.absolutePath
+        } else {
+            try {
+                val encoded = android.util.Base64.encodeToString(
+                    wrapped.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP
+                )
+                val cmd =
+                    "mkdir -p '$TMP_SCRIPT_DIR' && echo -n '$encoded' | base64 -d > '${wrapperFile.absolutePath}' && chmod 0755 '${wrapperFile.absolutePath}'"
+                val res = rawOneShotShizuku(cmd)
+                if (res == 0 && wrapperFile.exists() && wrapperFile.canRead()) {
+                    wrapperFile.absolutePath
+                } else {
+                    Log.e(TAG, "Shizuku write wrapper failed exit=$res")
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Shizuku wrapper write exception", e)
+                null
+            }
+        }
+
+        if (finalWrapperPath == null) {
+            // wrapper 写失败，回退到原始脚本（损失自动 --display，但至少能跑）
+            val cmd = buildString {
+                append("sh ")
+                append(scriptPath)
+                if (args.isNotEmpty()) {
+                    append(" ")
+                    append(args.joinToString(" "))
+                }
+            }
+            return cmd to null
+        }
+
+        val cmd = buildString {
+            append("sh ")
+            append(finalWrapperPath)
+            if (args.isNotEmpty()) {
+                append(" ")
+                append(args.joinToString(" "))
+            }
+        }
+        return cmd to finalWrapperPath
+    }
+
+    /**
+     * 单行命令 --display 注入：
+     *   1. 空行、注释行、连续空白直接返回
+     *   2. 命中 [VD_DISPLAY_CMDS] 的前缀且不包含 `--display ` 则插入
+     *   3. 插入位置：
+     *        - `input `              → `input --display $vdId <rest>`
+     *        - `uiautomator`        → `uiautomator --display $vdId <rest>`
+     *        - `am start`           → `am start --display $vdId <rest>`
+     *        - `am instrument` 等 am 子命令：`am <subcmd>` 后面插
+     */
+    internal fun appendDisplayToCommandLine(line: String, vdId: String): String {
+        if (line.isBlank()) return line
+        val trimmed = line.trimStart()
+        // 跳过纯注释
+        if (trimmed.startsWith('#')) return line
+        // 命令前可能有前导空格（保持原状）
+        val leading = line.substring(0, line.length - trimmed.length)
+        // 命中候选命令（trimmed 以 VD_DISPLAY_CMDS[i] 开头）
+        val prefix = VD_DISPLAY_CMDS.firstOrNull { trimmed.startsWith(it) } ?: return line
+        // 整行已经有 --display 了就别再加（包含单字符 --display）
+        if (trimmed.contains("--display")) return line
+
+        val restAfterPrefix: String
+        val displayInsertionPrefix: String
+        val cmd = trimmed
+        when {
+            cmd.startsWith("input ") || cmd.startsWith("input\t") -> {
+                restAfterPrefix = cmd.substring("input".length)
+                displayInsertionPrefix = "input --display $vdId"
+            }
+            cmd.startsWith("uiautomator") -> {
+                restAfterPrefix = cmd.substring("uiautomator".length)
+                displayInsertionPrefix = "uiautomator --display $vdId"
+            }
+            else -> {
+                // am start / am instrument / am startservice / am broadcast / am start-foreground-service
+                val parts = prefix.trim()
+                restAfterPrefix = cmd.substring(parts.length)
+                displayInsertionPrefix = "$parts --display $vdId"
+            }
+        }
+
+        // 拼接：确保 restAfterPrefix 首字符为空格以避免粘连
+        val sep = if (restAfterPrefix.isEmpty() || restAfterPrefix.first() == ' ' || restAfterPrefix.first() == '\t') "" else " "
+        return leading + displayInsertionPrefix + sep + restAfterPrefix
     }
 
     /**
