@@ -274,7 +274,7 @@ private fun VirtualDisplayPreview(
                 .height(cardHeight),
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
-                containerColor = Color(0xFF333333)
+                containerColor = Color(0xFFE0E0E0)
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
