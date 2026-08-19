@@ -220,6 +220,9 @@ object ScriptTaskManager {
                     saveToFileInternal()
                     Log.i(TAG, "Rewrote tasks.json with fixed scriptPath")
                 }
+                // 显式 Unit：避免把上面的 if 当作 try 块的最后表达式
+                // （Kotlin 中 try/catch 是表达式，if 作为表达式时必须配 else 分支）
+                Unit
             } catch (e: Exception) {
                 Log.e(TAG, "loadFromFile failed", e)
             }
