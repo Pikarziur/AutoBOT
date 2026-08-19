@@ -413,16 +413,16 @@ object ServerMain {
 
             val now = android.os.SystemClock.uptimeMillis()
             // DOWN + UP 一对构成完整按键事件
-            // 使用 6 参数 overload: obtain(downTime, eventTime, action, keyCode, repeat, metaState)
-            // 自 API 1 稳定（5 参数版本不存在）
-            val downEvent = android.view.KeyEvent.obtain(
+            // 注意：KeyEvent 没有 obtain(long,...) static 工厂（MotionEvent 才有）
+            // 必须用 constructor 直接构造：KeyEvent(downTime, eventTime, action, keyCode, repeat, metaState) — API 1+
+            val downEvent = android.view.KeyEvent(
                 now, now,
                 android.view.KeyEvent.ACTION_DOWN,
                 android.view.KeyEvent.KEYCODE_BACK,
                 0,  // repeat
                 0   // metaState
             )
-            val upEvent = android.view.KeyEvent.obtain(
+            val upEvent = android.view.KeyEvent(
                 now, now + 50,  // UP 比 DOWN 晚 50ms
                 android.view.KeyEvent.ACTION_UP,
                 android.view.KeyEvent.KEYCODE_BACK,
