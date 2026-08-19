@@ -2,7 +2,10 @@ package com.autobot.app.ui.tasks
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Point
+import android.hardware.display.DisplayManager
 import android.util.Log
+import android.view.Display
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -175,6 +178,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val taskListener = object : TaskManager.TaskListener {
         override fun onTaskStarted(task: com.autobot.app.model.TaskInfo) {
             appendScriptLog("[${stamp()}] ⟶ 启动任务『${task.name}』 (id=${task.id.substring(0, 4)} type=${task.type})")
+            // ★启动时打印 VD 注入摘要：让用户从日志直接确认"脚本执行映射到了哪块虚拟显示器、分辨率、目标 App"
+            //   - 这 4 项 = TaskManager.submitTask 时 extraEnv 注入的 AUTOBOT_VD_* 环境变量
+            //   - 若 displayId=0 或空 → 命令默认落到 display 0 = 主屏 = 就是当前"打 AutoBOT"的症状
+            val env = task.env
+            val dId = task.displayId.takeIf { it > 0 } ?: env["AUTOBOT_VD_DISPLAY_ID"]?.toIntOrNull() ?: 0
+            val vW = env["AUTOBOT_VD_WIDTH"]  ?: "-"
+            val vH = env["AUTOBOT_VD_HEIGHT"] ?: "-"
+            val pkg = env["AUTOBOT_TARGET_PACKAGE"] ?: "(未指定)"
+            val okHint = if (dId > 0 && vW != "-") "✅" else "⚠️"
+            appendScriptLog("[${stamp()}] $okHint VD 注入：display=$dId, size=${vW}x$vH, target=$pkg" +
+                    if (dId <= 0) "  → 注：display=0 将落到主屏，操作会打 AutoBOT！" else "")
         }
         override fun onTaskOutput(task: com.autobot.app.model.TaskInfo, line: String) {
             appendScriptLog("[${stamp()}] [${task.id.substring(0, 4)}] $line")
@@ -441,12 +455,41 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 val (vdW, vdH) = _vdTargetSize.value
                     ?: _displaySize.value.takeIf { it.first > 0 }
                     ?: (CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT)
+
+                // -------【关键：主屏（手机）物理分辨率 = 用户写脚本时的基准分辨率】-------
+                // 用户说"脚本坐标按手机分辨率写的，不想改 .sh"，那就统一主屏真实尺寸作为 BASE：
+                //   AUTOBOT_BASE_W x AUTOBOT_BASE_H = display 0 物理分辨率（你写脚本时按这个数写的 tap/swipe）
+                // ShellExecutor wrapper 会按 VD_W/BASE_W、VD_H/BASE_H 等比缩放所有坐标
+                // 并 clamp 到 [0, VD_W-1] × [0, VD_H-1]，全程不改脚本。
+                val (baseW, baseH) = runCatching {
+                    val ctx = getApplication<android.app.Application>()
+                    val dm = ctx.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                    val def = dm.getDisplay(Display.DEFAULT_DISPLAY) ?: error("无主屏")
+                    val size = Point().also { def.getRealSize(it) }
+                    // 宽小高大（竖屏基准）：如果手机是横屏（w>h），就交换回"宽高一致脚本的习惯"
+                    if (size.x > size.y) (size.y to size.x) else (size.x to size.y)
+                }.getOrElse {
+                    Log.w(TAG, "无法读取主屏尺寸，回退到 VD 基准（=不缩放）", it)
+                    vdW to vdH
+                }
+
                 val taskEnv = buildMap {
                     put("AUTOBOT_VD_DISPLAY_ID", vdDisplayId.toString())
                     put("AUTOBOT_VD_WIDTH", vdW.toString())
                     put("AUTOBOT_VD_HEIGHT", vdH.toString())
                     put("AUTOBOT_TARGET_PACKAGE", targetPkg)
+                    // BASE = 用户手机真实分辨率（写脚本时的坐标基准）
+                    put("AUTOBOT_BASE_W", baseW.toString())
+                    put("AUTOBOT_BASE_H", baseH.toString())
                 }
+
+                // 启动日志中同时打印『缩放系数』（千分比），让你一眼知道这次是否做了 BASE→VD 等比
+                // 比如 base=1200x2608, vd=540x960 → sx=450‰, sy≈368‰，脚本 (1200,2608)=(右下) 会缩到 (539,959)
+                val sx = if (baseW > 0) vdW * 1000 / baseW else 1000
+                val sy = if (baseH > 0) vdH * 1000 / baseH else 1000
+                val scalingNote = if (sx == 1000 && sy == 1000) "（基准与 VD 一致，不缩放）"
+                                  else "（base=${baseW}x$baseH → vd=${vdW}x$vdH，sx=${sx}‰, sy=${sy}‰）"
+                appendLauncherLog("[${stamp()}] ⚙️  坐标缩放开关：$scalingNote  越界点将自动贴边到 VD 边界")
 
                 // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScriptStreaming）
                 // - displayId：TaskManager 内部会合并为 AUTOBOT_VD_DISPLAY_ID

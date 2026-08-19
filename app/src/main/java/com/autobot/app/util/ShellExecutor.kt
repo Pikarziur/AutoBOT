@@ -309,15 +309,38 @@ object ShellExecutor {
     }
 
     // 包装脚本中，需要自动注入 --display 的命令前缀（行首关键字）
+    // ★说明：
+    //   - am <subcmd> / uiautomator：--display 放在子命令关键字之后即可
+    //   - input <subcmd>：--display 必须放在 SUBCOMMAND（tap/swipe/text/keyevent/drag…）之后，
+    //     否则 Android 12+ 会报 "Unknown command: --display"，退回 display=0，打到主屏 AutoBOT
+    //   - wm size / wm density / dumpsys window / dumpsys input / settings [global/system/secure]：
+    //     脚本常用来"读取当前分辨率/密度/输入法状态"，如果不加 --display，默认读主屏，
+    //     导致脚本按主屏坐标做 tap/swipe，明显偏移目标 App
     private val VD_DISPLAY_CMDS = arrayOf(
         "am start",
         "am instrument",
         "am start-foreground-service",
         "am startservice",
         "am broadcast",
+        "am stack",
+        "am task",
         "input ",
         "input\t",
-        "uiautomator"
+        "uiautomator",
+        "wm size",
+        "wm density",
+        "dumpsys window",
+        "dumpsys input",
+        "settings get",
+        "settings put",
+        "settings list",
+        "settings delete"
+    )
+
+    /** input 合法子命令集合（--display 位置必须放在 SUBCOMMAND 之后） */
+    private val INPUT_SUBCOMMANDS = setOf(
+        "text", "keyevent", "tap", "swipe", "draganddrop", "drag",
+        "press", "roll", "motionevent", "tmode", "getevent", "sendevent"
     )
 
     /**
@@ -361,19 +384,66 @@ object ShellExecutor {
         // 写 wrapper：逐行处理
         val wrapped = try {
             val safeVdId = vdId
+            val vdEnvForScaling = env.filterKeys { it == "AUTOBOT_BASE_W" || it == "AUTOBOT_BASE_H" || it == "AUTOBOT_VD_WIDTH" || it == "AUTOBOT_VD_HEIGHT" }
             val lines = src.readLines()
             val sb = StringBuilder(lines.size * 80 + 256)
             // 首行保留 shebang / 或 #!/system/bin/sh，否则写默认 sh
             val first = lines.firstOrNull()
-            if (first?.startsWith("#!") == true) {
+            val restLines = if (first?.startsWith("#!") == true) {
                 sb.append(first).append('\n')
                 lines.drop(1)
             } else {
                 sb.append("#!/system/bin/sh\n")
                 lines
-            }.forEach { rawLine ->
-                val line = appendDisplayToCommandLine(rawLine, safeVdId)
-                sb.append(line).append('\n')
+            }
+
+            // =====【前置：坐标缩放 sh 函数】=====
+            // 用户脚本坐标是按"手机主屏分辨率"写的，不想改 .sh。
+            // 这里用纯 sh 定义两个函数 _autobot_scalex / _autobot_scaley：
+            //   把 BASE（主屏）坐标系整数坐标 → 等比缩放到 VD 坐标系 → clamp 到 [0, VD_W-1] / [0, VD_H-1]
+            // 后续每行命令经过 scaleInputCoordsInLine() 改写，把对应坐标数字替换成
+            //   "$(_autobot_scalex 1200)" 这种运行时求值形式，
+            // 这样脚本执行时会自动算出 VD 内的正确坐标，并且越界点自动贴边。
+            run {
+                val baseW = vdEnvForScaling["AUTOBOT_BASE_W"]?.toIntOrNull() ?: 0
+                val baseH = vdEnvForScaling["AUTOBOT_BASE_H"]?.toIntOrNull() ?: 0
+                val vdW   = vdEnvForScaling["AUTOBOT_VD_WIDTH"]?.toIntOrNull() ?: 0
+                val vdH   = vdEnvForScaling["AUTOBOT_VD_HEIGHT"]?.toIntOrNull() ?: 0
+                if (baseW > 0 && baseH > 0 && vdW > 0 && vdH > 0) {
+                    // 千分比缩放，避免 sh 浮点： _autobot_sx ‰ = vdW * 1000 / baseW
+                    sb.appendLine("# =============================================================")
+                    sb.appendLine("# AutoBOT 自动坐标缩放（不改脚本）：")
+                    sb.appendLine("#   BASE（写脚本时的手机分辨率）=$baseW x $baseH")
+                    sb.appendLine("#   VD（实际注入到的虚拟显示器）=$vdW x $vdH")
+                    sb.appendLine("#   sx=${vdW * 1000.0 / baseW}‰  sy=${vdH * 1000.0 / baseH}‰")
+                    sb.appendLine("#   超出 VD 的点会被自动裁到 VD 边界（=自动贴边，不会\"点了没反应\"）")
+                    sb.appendLine("# =============================================================")
+                    sb.appendLine("_autobot_sx=\$(( (${vdW} * 1000) / $baseW ))   # 水平缩放系数(‰)")
+                    sb.appendLine("_autobot_sy=\$(( (${vdH} * 1000) / $baseH ))   # 垂直缩放系数(‰)")
+                    sb.appendLine("_autobot_vdw=$vdW")
+                    sb.appendLine("_autobot_vdh=$vdH")
+                    // _autobot_scalex X → 返回 clamp( round(X * sx‰), 0..vdW-1 )
+                    sb.append("_autobot_scalex() { local _x; _x=\\$(( (\\$1 * \\$_autobot_sx + 500) / 1000 )); ")
+                    sb.append("if [ \\$_x -lt 0 ]; then _x=0; fi; ")
+                    sb.append("if [ \\$_x -ge \\$_autobot_vdw ]; then _x=\\$((\\$_autobot_vdw-1)); fi; ")
+                    sb.appendLine("printf '%s' \"\\$_x\"; }")
+                    // _autobot_scaley Y → 返回 clamp( round(Y * sy‰), 0..vdH-1 )
+                    sb.append("_autobot_scaley() { local _y; _y=\\$(( (\\$1 * \\$_autobot_sy + 500) / 1000 )); ")
+                    sb.append("if [ \\$_y -lt 0 ]; then _y=0; fi; ")
+                    sb.append("if [ \\$_y -ge \\$_autobot_vdh ]; then _y=\\$((\\$_autobot_vdh-1)); fi; ")
+                    sb.appendLine("printf '%s' \"\\$_y\"; }")
+                    sb.appendLine()
+                }
+            }
+
+            // 逐行处理：
+            //   1) appendDisplayToCommandLine 补 --display 到正确位置（解决 Unknown command: --display）
+            //   2) scaleInputCoordsInLine    把 input tap/swipe/drag/press/draganddrop 的坐标参数
+            //                                替换成 $(_autobot_scalex N) / $(_autobot_scaley N)
+            restLines.forEach { rawLine ->
+                val line1 = appendDisplayToCommandLine(rawLine, safeVdId)
+                val line2 = scaleInputCoordsInLine(line1)
+                sb.append(line2).append('\n')
             }
             sb.toString()
         } catch (e: Exception) {
@@ -447,12 +517,18 @@ object ShellExecutor {
     /**
      * 单行命令 --display 注入：
      *   1. 空行、注释行、连续空白直接返回
-     *   2. 命中 [VD_DISPLAY_CMDS] 的前缀且不包含 `--display ` 则插入
-     *   3. 插入位置：
-     *        - `input `              → `input --display $vdId <rest>`
-     *        - `uiautomator`        → `uiautomator --display $vdId <rest>`
-     *        - `am start`           → `am start --display $vdId <rest>`
-     *        - `am instrument` 等 am 子命令：`am <subcmd>` 后面插
+     *   2. 命中 [VD_DISPLAY_CMDS] 的前缀且不包含 `--display` 才插入
+     *   3. 插入位置按命令类别不同，**关键修复**：
+     *        - Android `input <SUBCOMMAND>`：`--display` 必须放在 SUBCOMMAND 之后！
+     *            ✅ `input tap --display $vdId 270 720`
+     *            ❌ `input --display $vdId tap 270 720`（Android 12+ 报 "Unknown command: --display"
+     *               → --display 被丢弃 → 命令退回 display=0 → 操作打在主屏 AutoBOT 上，就是你看到的效果）
+     *        - `uiautomator dump / events / runtest ...` → `uiautomator --display $vdId <rest>`
+     *        - `am start` / `am instrument` / `am startservice` / `am broadcast` / ...
+     *          → 保持 `am <subcmd> --display $vdId <rest>`（原行为就是对的）
+     *        - `wm size / wm density` → `wm size --display $vdId <rest>`（--display 也是子命令之后）
+     *        - `dumpsys window` / `dumpsys input` → `dumpsys window --display $vdId <rest>`
+     *        - `settings get/put/list/delete <namespace> <key>` 可选 display 参数，放 namespace 之后
      */
     internal fun appendDisplayToCommandLine(line: String, vdId: String): String {
         if (line.isBlank()) return line
@@ -461,34 +537,217 @@ object ShellExecutor {
         if (trimmed.startsWith('#')) return line
         // 命令前可能有前导空格（保持原状）
         val leading = line.substring(0, line.length - trimmed.length)
-        // 命中候选命令（trimmed 以 VD_DISPLAY_CMDS[i] 开头）
-        val prefix = VD_DISPLAY_CMDS.firstOrNull { trimmed.startsWith(it) } ?: return line
-        // 整行已经有 --display 了就别再加（包含单字符 --display）
+        // 命中候选命令（trimmed 以 VD_DISPLAY_CMDS[i] 开头；按"最长优先"命中，保证 settings put 等 2 词前缀被匹配）
+        val prefix = VD_DISPLAY_CMDS
+            .filter { trimmed.startsWith(it) }
+            .maxByOrNull { it.length }
+            ?: return line
+        // 整行已经有 --display 了就别再加
         if (trimmed.contains("--display")) return line
 
-        val restAfterPrefix: String
-        val displayInsertionPrefix: String
         val cmd = trimmed
+        val displayFlag = "--display $vdId"
+
         when {
             cmd.startsWith("input ") || cmd.startsWith("input\t") -> {
-                restAfterPrefix = cmd.substring("input".length)
-                displayInsertionPrefix = "input --display $vdId"
+                // =============== input：关键位置修复 ===============
+                // 结构：input [SUBCOMMAND] [args...]
+                val afterInput = cmd.substring("input".length)
+                    .trimStart()  // 去除 input 后紧跟的空白
+                if (afterInput.isBlank()) {
+                    // `input` 单独一行（打印帮助），保持不变
+                    return line
+                }
+                // 切出 SUBCOMMAND（第一个空白分隔的 token）
+                val firstSpaceIdx = afterInput.indexOfAny(charArrayOf(' ', '\t'))
+                val subcommand = if (firstSpaceIdx < 0) afterInput else afterInput.substring(0, firstSpaceIdx)
+                val subArgs = if (firstSpaceIdx < 0) "" else afterInput.substring(firstSpaceIdx + 1)
+
+                return if (INPUT_SUBCOMMANDS.contains(subcommand)) {
+                    // ★核心修复：--display 放在 SUBCOMMAND 之后，其余参数跟在 --display 之后
+                    // 合法示例：input tap --display 11 270 720
+                    //          input swipe --display 11 200 1600 200 400 300
+                    //          input text --display 11 "hello world"
+                    val sep = if (subArgs.isBlank()) "" else " "
+                    leading + "input $subcommand $displayFlag$sep$subArgs"
+                } else {
+                    // 未知子命令（帮助或未来新语法），尾部附加 --display 更安全
+                    val sep = if (subArgs.isBlank()) " " else " "
+                    leading + "input $subcommand$sep$subArgs $displayFlag"
+                }
             }
+
             cmd.startsWith("uiautomator") -> {
-                restAfterPrefix = cmd.substring("uiautomator".length)
-                displayInsertionPrefix = "uiautomator --display $vdId"
+                // uiautomator <subcmd> → --display 放 uiautomator 关键字之后（与 am start 相同）
+                val rest = cmd.substring("uiautomator".length)
+                val sep = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "uiautomator $displayFlag$sep$rest"
             }
+
+            cmd.startsWith("am stack") || cmd.startsWith("am task") -> {
+                // am stack move-task / am task move-task：--display 实际上放最后也可以，
+                // 但为了明确语义，仍然放在 <stack|task> 子关键字 <move-task> 之后（am 系列一致）
+                val parts = prefix.trim() // "am stack" 或 "am task"
+                val rest = cmd.substring(parts.length)
+                val sep = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "$parts $displayFlag$sep$rest"
+            }
+
+            cmd.startsWith("wm size") || cmd.startsWith("wm density") -> {
+                // wm size --display <id> [reset|WxH]   /   wm density --display <id> [reset|DPI]
+                val parts = prefix.trim()
+                val rest = cmd.substring(parts.length)
+                val sep = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "$parts $displayFlag$sep$rest"
+            }
+
+            cmd.startsWith("dumpsys window") || cmd.startsWith("dumpsys input") -> {
+                // dumpsys window --display <id> [-a] [tokens|windows|... ]
+                // dumpsys input --display <id>
+                val parts = prefix.trim()
+                val rest = cmd.substring(parts.length)
+                val sep = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "$parts $displayFlag$sep$rest"
+            }
+
+            cmd.startsWith("settings get") ||
+                    cmd.startsWith("settings put") ||
+                    cmd.startsWith("settings list") ||
+                    cmd.startsWith("settings delete") -> {
+                // settings get  global display_size_virtual   → --display 放在 namespace 之后
+                // settings put  global window_animation_scale 0.5  → 同上
+                // 结构：settings <get|put|list|delete> <NAMESPACE> [key] [value...]
+                val first = prefix.trim()                // "settings get" / "settings put" / ...
+                val afterFirst = cmd.substring(first.length).trimStart()
+                if (afterFirst.isBlank()) return line
+                val sp = afterFirst.indexOfAny(charArrayOf(' ', '\t'))
+                val namespace = if (sp < 0) afterFirst else afterFirst.substring(0, sp)
+                val rest = if (sp < 0) "" else afterFirst.substring(sp + 1)
+                // 结果：settings get --display $vdId global display_size_virtual
+                val sep1 = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "$first $displayFlag $namespace$sep1$rest"
+            }
+
             else -> {
                 // am start / am instrument / am startservice / am broadcast / am start-foreground-service
                 val parts = prefix.trim()
-                restAfterPrefix = cmd.substring(parts.length)
-                displayInsertionPrefix = "$parts --display $vdId"
+                val rest = cmd.substring(parts.length)
+                val sep = if (rest.isEmpty() || rest.first() == ' ' || rest.first() == '\t') "" else " "
+                return leading + "$parts $displayFlag$sep$rest"
             }
         }
+    }
 
-        // 拼接：确保 restAfterPrefix 首字符为空格以避免粘连
-        val sep = if (restAfterPrefix.isEmpty() || restAfterPrefix.first() == ' ' || restAfterPrefix.first() == '\t') "" else " "
-        return leading + displayInsertionPrefix + sep + restAfterPrefix
+    // ====================================================================
+    // input 命令坐标：BASE（手机主屏） → VD 等比缩放 + 越界自动贴边
+    // ====================================================================
+    /** 需要把坐标参数替换成 `$(_autobot_scalex N)` / `$(_autobot_scaley N)` 的 input 子命令。 */
+    private val INPUT_SCALE_SUBCOMMANDS = setOf("tap", "swipe", "draganddrop", "drag", "press")
+
+    /**
+     * 将一行命令中 `input <SUBCOMMAND> [--display DID] <坐标参数...>` 的坐标参数，
+     * 替换成 sh 函数调用形式，保证 wrapper 执行时会：
+     *   1. 用千分比 sx/sy 把"手机基准"的整数坐标等比缩放到 VD
+     *   2. clamp 到 [0, VD_W-1] / [0, VD_H-1]（超出 VD 的点自动贴边，不会"点了没反应"）
+     *
+     * 参数按位置识别（不会动非坐标参数，比如 swipe 的 duration 不会被缩放）：
+     *   input tap X Y                                → X=scaleX, Y=scaleY
+     *   input press X Y                              → X=scaleX, Y=scaleY
+     *   input swipe X1 Y1 X2 Y2 [DURATION]           → X1,X2=scaleX；Y1,Y2=scaleY；DURATION 不动
+     *   input draganddrop X1 Y1 X2 Y2 [DURATION]     → 同 swipe
+     *   input drag X1 Y1 X2 Y2 [DURATION]            → 同 swipe
+     *
+     * 如果 line 不是上述 input 子命令，原样返回。
+     */
+    internal fun scaleInputCoordsInLine(line: String): String {
+        if (line.isBlank()) return line
+        val trimmed = line.trimStart()
+        if (!trimmed.startsWith("input ") && !trimmed.startsWith("input\t")) return line
+        // 纯注释/空直接跳过（前面 if (isBlank) 已挡）
+
+        val leading = line.substring(0, line.length - trimmed.length)
+        // 简单 tokenize：按空白切开（不支持带空格字符串；input 命令除 text 外都没有空格）
+        val tokens = trimmed.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+        if (tokens.size < 2) return line
+
+        val subcommand = tokens[1]
+        if (!INPUT_SCALE_SUBCOMMANDS.contains(subcommand)) return line
+        // 没有 BASE→VD 的缩放环境变量就不做替换
+        //   我们用"wrapper 里 _autobot_sx 这些变量有没有被定义"来判断是否已启用缩放，
+        //   但这里在生成 wrapper 时没法事后知道，所以用更稳妥方式：
+        //   只有当 env 里有 AUTOBOT_BASE_W/H 且 VD_W/H 时才替换。
+        //   但这个函数没接收 env，所以改成**总是输出替换形式**：
+        //   如果 wrapper 没定义 _autobot_scalex，那 $(_autobot_scalex 1200) 会执行失败返回空？
+        //   —— 不会，因为 _autobot_scalex 没定义时 sh 会报错 command not found，这会把脚本搞挂。
+        // 安全做法：把函数改成**可选参数**：把替换形式写成一个"有定义就调用、否则原样输出"的表达式。
+        // sh 中做法：command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex N || echo N
+        // 所以 X 参数替换后： $(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex X || printf '%s' X)
+        // 同理 Y：$(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley Y || printf '%s' Y)
+        // 这样即便 wrapper 没有注入缩放函数（缺 BASE/VD 变量），脚本行为也完全回退 = 原样执行，
+        // 不会报错 command not found，也不会乱。
+
+        fun sx(n: String) =
+            "\$(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex $n || printf '%s' $n)"
+        fun sy(n: String) =
+            "\$(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley $n || printf '%s' $n)"
+
+        // 先把 tokens 里的 "--display <DID>" 抽出来，按 input SUBCOMMAND --display DID <rest...> 顺序重排
+        val rest = tokens.drop(2).toMutableList()
+        var displayId: String? = null
+        run {
+            val i = rest.indexOf("--display")
+            if (i >= 0 && i + 1 < rest.size) {
+                displayId = rest[i + 1]
+                rest.removeAt(i + 1)
+                rest.removeAt(i)
+            }
+        }
+        // rest 现在只剩 SUBCOMMAND 的参数（不含 --display）
+
+        // 只识别纯整数字符串参数（-?\d+），文本 / 变量 / 非数字原样保留
+        fun String.isIntParam() = this matches Regex("-?\\d+")
+
+        val scaledRest = when (subcommand) {
+            "tap", "press" -> {
+                // X Y → 两个整数
+                rest.mapIndexed { idx, s ->
+                    if (!s.isIntParam()) s
+                    else when (idx) {
+                        0 -> sx(s)
+                        1 -> sy(s)
+                        else -> s  // 更多参数按 Android 定义通常不存在，安全起见不动
+                    }
+                }
+            }
+            "swipe", "drag", "draganddrop" -> {
+                // X1 Y1 X2 Y2 [DURATION_MS]
+                rest.mapIndexed { idx, s ->
+                    if (!s.isIntParam()) s
+                    else when (idx) {
+                        0 -> sx(s)  // X1
+                        1 -> sy(s)  // Y1
+                        2 -> sx(s)  // X2
+                        3 -> sy(s)  // Y2
+                        else -> s   // idx=4 是 duration；再之后都是非坐标，不动
+                    }
+                }
+            }
+            else -> rest
+        }
+
+        // 拼回最终行
+        return buildString {
+            append(leading)
+            append("input ")
+            append(subcommand)
+            if (displayId != null) {
+                append(" --display ").append(displayId)
+            }
+            if (scaledRest.isNotEmpty()) {
+                append(' ')
+                append(scaledRest.joinToString(" "))
+            }
+        }
     }
 
     /**
