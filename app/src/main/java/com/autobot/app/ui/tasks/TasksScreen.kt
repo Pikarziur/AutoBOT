@@ -375,6 +375,16 @@ private fun FullscreenMonitor(
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
         val originalOrientation = activity?.requestedOrientation
 
+        // 关键：让 Window 不再为系统栏（状态栏/导航栏）预留 inset 空间
+        // 这样 BoxWithConstraints(fillMaxSize) 拿到的就是真正的整屏尺寸，
+        // 居中后黑边严格等距，画面不会偏下。
+        // 原本只调用 controller.hide() 只是"隐藏"，Window 仍会按系统栏高度预留空白。
+        val originalDecorFitsSystemWindows = if (window != null) {
+            // Android 15+ 默认 true，低版本默认 false；统一记录原值用于恢复
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R
+        } else false
+        window?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+
         controller?.let {
             it.hide(WindowInsetsCompat.Type.statusBars())
             it.systemBarsBehavior =
@@ -393,6 +403,8 @@ private fun FullscreenMonitor(
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars())
             controller?.show(WindowInsetsCompat.Type.navigationBars())
+            // 恢复 DecorFitsSystemWindows 原值，避免退出全屏后小窗模式布局异常
+            window?.let { WindowCompat.setDecorFitsSystemWindows(it, originalDecorFitsSystemWindows) }
             if (originalOrientation != null && activity != null) {
                 activity.requestedOrientation = originalOrientation
             } else if (activity != null) {

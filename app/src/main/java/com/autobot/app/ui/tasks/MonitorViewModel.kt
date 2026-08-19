@@ -523,9 +523,33 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         // 6. 启动 App 到虚拟显示器
         val ok = AppManager.launchApp(context, packageName, dId)
         return if (ok) {
-            val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
+            // 6.1 启动成功后执行任务隔离：
+            //   淘宝等商业 App 启动流程复杂，部分组件可能在真实屏幕（display 0）残留窗口，
+            //   导致最近任务列表出现白屏 App。通过 am stack move-task 把残留任务移到 VD。
+            //   失败不影响主流程，仅记录日志（MIUI/HarmonyOS 隐藏 API 过滤可能拒绝）。
+            val isolateResult = TaskIsolator.isolateToVirtualDisplay(
+                targetPackage = packageName,
+                vdDisplayId = dId,
+                delayMs = 1500L  // 等待 Splash → MainActivity 跳转稳定
+            )
+
+            val isolateMsg = when {
+                isolateResult.totalFound == 0 ->
+                    "（无残留任务）"
+                isolateResult.isSuccess ->
+                    "（已迁移 ${isolateResult.migratedCount}/${isolateResult.totalFound} 个残留任务到 VD）"
+                else ->
+                    "（迁移 ${isolateResult.migratedCount}/${isolateResult.totalFound}，" +
+                            "部分失败：${isolateResult.errors.joinToString()}）"
+            }
+
+            val msg = "已启动到虚拟显示器 (${targetW}x${targetH}) $isolateMsg"
+            val r = true to msg
             _executeMessage.value = r.second
-            appendLog("[${stamp()}] ✓ ${r.second}, pkg=$packageName, display=$dId")
+            appendLog("[${stamp()}] ✓ ${r.second}, pkg=$packageName, display=$dId, vdStack=${isolateResult.vdStackId}")
+            if (isolateResult.errors.isNotEmpty()) {
+                appendLog("[${stamp()}] ⚠ 任务隔离失败项: ${isolateResult.errors.joinToString()}")
+            }
             r
         } else {
             val r = false to "App 启动命令失败，请确认目标应用已安装"
