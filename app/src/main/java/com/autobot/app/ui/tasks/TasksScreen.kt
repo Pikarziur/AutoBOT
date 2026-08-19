@@ -10,7 +10,6 @@ import android.widget.ImageView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -28,12 +27,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -45,6 +47,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,7 +56,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -561,14 +563,24 @@ private fun android.content.Context.findActivity(): Activity? {
 }
 
 /**
- * 淘宝启动条（固定显示，不再支持下拉切换）
+ * 淘宝启动条（Material 3 ListItem + FilledButton 重设计）
  *
- * 左侧：淘宝图标 + "淘宝" 文本（图标加载失败时显示默认占位色块）
- * 右侧：三角形播放按钮（蓝色填充圆形 IconButton）
+ * 布局结构（M3 ListItem 三段式）：
+ *   ┌──────────────────────────────────────────────────────┐
+ *   │ [图标]  淘宝                                [▶ 启动] │
+ *   │  40dp   com.taobao.taobao                      40dp  │
+ *   │         ↑ headline(titleMedium)                  ↑   │
+ *   │         ↑ supportingContent(bodySmall+灰)        ↑   │
+ *   │                                                 FilledButton│
+ *   └──────────────────────────────────────────────────────┘
+ *      ↑ containerColor = surfaceVariant（暖灰底）
+ *      ↑ clip(RoundedCornerShape(12dp)) 与项目卡片圆角对齐
  *
- * 与原 AppLauncherRow 的差异：
- *  - 移除 installedApps / DropdownMenu / DropdownMenuItem，UI 简化为单行
- *  - 包名固定为 com.taobao.taobao，由调用方在 onLaunchClick 时传入
+ * 与旧版差异：
+ *   - 移除自定义 Row + Surface 包装，改用 M3 ListItem 标准三段式
+ *   - 启动按钮从 IconButton(圆形 44dp) 升级为 FilledButton(图标+文字, 高度 40dp)
+ *   - 新增 supportingContent 显示包名，提供更明确的语义信息
+ *   - 启动中状态：按钮文字变为 "启动中"，按钮 enabled=false 自动灰显
  */
 @Composable
 private fun TaobaoLauncherRow(
@@ -576,67 +588,57 @@ private fun TaobaoLauncherRow(
     launching: Boolean,
     onLaunchClick: () -> Unit
 ) {
-    val accentBlue = MaterialTheme.colorScheme.primary
-
-    Row(
+    ListItem(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        // ---------------- 左侧：淘宝图标 + 文本（不可点击） ----------------
-        Surface(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(8.dp),
-            tonalElevation = 0.dp
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(top = 12.dp)
+            .clip(RoundedCornerShape(12.dp)),
+        colors = ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        leadingContent = {
+            AppIconDrawable(
+                icon = taobaoIcon,
+                modifier = Modifier.size(40.dp)
+            )
+        },
+        headlineContent = {
+            Text(
+                text = "淘宝",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        },
+        supportingContent = {
+            Text(
+                text = AppManager.DEFAULT_PACKAGE_TAOBAO,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        trailingContent = {
+            Button(
+                onClick = onLaunchClick,
+                enabled = !launching,
+                contentPadding = ButtonDefaults.ContentPadding,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                modifier = Modifier.height(40.dp)
             ) {
-                AppIconDrawable(
-                    icon = taobaoIcon,
-                    modifier = Modifier.size(26.dp)
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
                 )
-
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "淘宝",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f)
+                    text = if (launching) "启动中" else "启动"
                 )
             }
         }
-
-        // ---------------- 右侧：三角形播放按钮 ----------------
-        // 蓝色填充圆形按钮，中心为三角形 PlayArrow 图标
-        IconButton(
-            onClick = onLaunchClick,
-            enabled = !launching,
-            modifier = Modifier
-                .size(44.dp)
-                .background(
-                    if (!launching) accentBlue
-                    else accentBlue.copy(alpha = 0.4f),
-                    CircleShape
-                )
-        ) {
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = "启动淘宝",
-                tint = Color.White,
-                modifier = Modifier.size(28.dp)
-            )
-        }
-    }
+    )
 }
 
 /**
