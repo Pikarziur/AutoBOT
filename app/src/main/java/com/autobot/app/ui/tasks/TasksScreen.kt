@@ -116,10 +116,8 @@ fun TasksScreen(
         }
     }
 
-    // 初次进入：仅加载淘宝图标
-    // 不再自动启动虚拟显示器——VD 由用户点击播放按钮时
-    // 通过 launchAppWithOrientationAdaptation() 重建（先 stop 再 start），
-    // 进入页面就自动启动只会得到一个空 VD（黑屏）+ 误导性的"运行中"指示
+    // 初次进入：仅加载淘宝图标（不自动启动虚拟显示器）
+    // VD 由用户点击播放按钮时通过 launchAppWithOrientationAdaptation 重建并启动淘宝
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
             val appInfo = AppManager.getAppByPackageName(context, AppManager.DEFAULT_PACKAGE_TAOBAO)
@@ -282,34 +280,20 @@ private fun VirtualDisplayPreview(
             Box(modifier = Modifier.fillMaxSize()) {
                 content()
 
-                when {
-                    !isRunning -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "虚拟显示器未启动",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    !isSurfaceAvailable -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "等待 Surface...",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                // 未启动时不显示遮罩文字（全黑背景 + 右上角"未启动"指示器已足够）
+                // 仅在已启动但 Surface 尚未绑定时提示
+                if (isRunning && !isSurfaceAvailable) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "等待 Surface...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
 
@@ -418,66 +402,102 @@ private fun FullscreenMonitor(
         }
     }
 
+    // ============ 等比缩放 + 黑边（对齐 MAA-Meow 全屏实现） ============
+    // 外层：屏幕黑底（黑边来源）
+    // 中层：BoxWithConstraints 等比计算预览区域尺寸并居中
+    // 内层：实际显示区域，SurfaceView + 触摸事件 + 退出按钮都在这里
+    //       这样 viewToVirtualDisplay 接收的 viewWidth/viewHeight 与 VD 比例一致，
+    //       黑边偏移自然为 0，触摸点不会因误判黑边而被丢弃。
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(bufferWidth, bufferHeight) {
-                var lastX = 0
-                var lastY = 0
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull() ?: continue
-                        val viewX = change.position.x.toInt()
-                        val viewY = change.position.y.toInt()
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            // 与小窗模式 VirtualDisplayPreview 完全一致的等比缩放算法
+            val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
+                bufferWidth.toFloat() / bufferHeight.toFloat()
+            } else {
+                16f / 9f  // 兜底
+            }
+            val maxWidthPx = maxWidth
+            val maxHeightPx = maxHeight
+            val widthFromHeight = maxHeightPx * aspectRatio
+            val heightFromWidth = maxWidthPx / aspectRatio
+            val (previewW, previewH) = if (widthFromHeight <= maxWidthPx) {
+                widthFromHeight to maxHeightPx
+            } else {
+                maxWidthPx to heightFromWidth
+            }
 
-                        val mapped = viewToVirtualDisplay(
-                            viewX = viewX,
-                            viewY = viewY,
-                            viewWidth = size.width,
-                            viewHeight = size.height,
-                            bufferWidth = bufferWidth,
-                            bufferHeight = bufferHeight
-                        )
+            // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
+            Box(
+                modifier = Modifier
+                    .width(previewW)
+                    .height(previewH)
+                    .pointerInput(bufferWidth, bufferHeight) {
+                        var lastX = 0
+                        var lastY = 0
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: continue
+                                val viewX = change.position.x.toInt()
+                                val viewY = change.position.y.toInt()
 
-                        if (mapped == null) continue
+                                val mapped = viewToVirtualDisplay(
+                                    viewX = viewX,
+                                    viewY = viewY,
+                                    viewWidth = size.width,
+                                    viewHeight = size.height,
+                                    bufferWidth = bufferWidth,
+                                    bufferHeight = bufferHeight
+                                )
 
-                        val (vx, vy) = mapped
-                        when (event.type) {
-                            PointerEventType.Press -> {
-                                lastX = vx
-                                lastY = vy
-                                vm.onTouchDown(vx, vy)
+                                if (mapped == null) continue
+
+                                val (vx, vy) = mapped
+                                when (event.type) {
+                                    PointerEventType.Press -> {
+                                        lastX = vx
+                                        lastY = vy
+                                        vm.onTouchDown(vx, vy)
+                                    }
+                                    PointerEventType.Move -> {
+                                        vm.onTouchMove(lastX, lastY, vx, vy)
+                                        lastX = vx
+                                        lastY = vy
+                                    }
+                                    PointerEventType.Release -> {
+                                        vm.onTouchUp(vx, vy)
+                                    }
+                                    else -> { /* ignore */ }
+                                }
                             }
-                            PointerEventType.Move -> {
-                                vm.onTouchMove(lastX, lastY, vx, vy)
-                                lastX = vx
-                                lastY = vy
-                            }
-                            PointerEventType.Release -> {
-                                vm.onTouchUp(vx, vy)
-                            }
-                            else -> { /* ignore */ }
                         }
                     }
+            ) {
+                // SurfaceView 填满实际显示区域
+                previewContent()
+
+                // 退出按钮放在画面右上角（黑边内），避免遮挡到屏幕边缘
+                IconButton(
+                    onClick = onExit,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "退出全屏",
+                        tint = Color.White
+                    )
                 }
             }
-    ) {
-        previewContent()
-
-        IconButton(
-            onClick = onExit,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp)
-                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "退出全屏",
-                tint = Color.White
-            )
         }
     }
 }

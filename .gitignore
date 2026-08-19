@@ -1,6 +1,8 @@
 # ---- Gradle ----
 .gradle/
 build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 
 # ---- Android / IntelliJ ----
 *.iml
@@ -14,10 +16,7 @@ captures/
 *.jks
 *.keystore
 *.properties
-# 通用 *.properties 规则必须放在 wrapper 文件取消忽略之前，
-# 否则后面的 *.properties 会把前面 !gradle-wrapper.properties 重新忽略掉（gitignore 后定义优先）
 !gradle.properties
-!gradle/wrapper/gradle-wrapper.properties
 
 # ---- OS ----
 .DS_Store
