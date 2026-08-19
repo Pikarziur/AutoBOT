@@ -9,6 +9,7 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -18,6 +19,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -148,6 +150,9 @@ private fun MainScreen() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        // 全屏时不消费系统栏 inset，让内容区真正占满整个窗口
+        // 非全屏时用 Scaffold 默认的 safeDrawing 行为，配合页面自己的 statusBarsPadding
+        contentWindowInsets = if (isFullscreen) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
         bottomBar = {
             // 全屏时隐藏底部导航栏（不渲染，content 区域自动扩展到全屏）
             if (!isFullscreen) {
@@ -162,7 +167,8 @@ private fun MainScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .padding(padding)
+                // 全屏时不应用 Scaffold 计算的 padding（避免顶部预留状态栏高度）
+                .then(if (isFullscreen) Modifier else Modifier.padding(padding))
         ) {
             when (currentTab) {
                 MainTab.TASKS -> TasksScreen()
