@@ -1200,14 +1200,20 @@ private fun LogsTabContent(vm: MonitorViewModel) {
         // ★统一水平 padding，与任务 Tab 保持一致，不让内容顶到卡片边
         val contentHPadding = 20.dp
 
-        // ---------- 头部：复制按钮 + 标题 + 清空按钮 ----------
+        // ---------- 头部：标题 + [复制][清空]（复制按钮紧挨着清空按钮的左侧，两者都在右端） ----------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = contentHPadding, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // ★复制按钮：在标题"左边"，复制完整日志（空列表时禁用）
+            Text(
+                text = "执行日志（${logs.size}）",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.weight(1f))
+            // ★复制按钮：靠着「清空」按钮的左侧，复制完整日志（空列表时禁用）
             TextButton(
                 onClick = { copyAllLogs() },
                 enabled = logs.isNotEmpty()
@@ -1220,12 +1226,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                 Spacer(Modifier.width(4.dp))
                 Text("复制")
             }
-            Text(
-                text = "执行日志（${logs.size}）",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(4.dp))
             TextButton(onClick = { vm.clearLogs() }) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
