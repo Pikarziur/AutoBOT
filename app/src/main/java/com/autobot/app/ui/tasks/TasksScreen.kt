@@ -33,6 +33,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -91,6 +93,7 @@ fun TasksScreen(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var isFullscreen by remember { mutableStateOf(false) }
     val isLandscape by vm.isLandscape.collectAsStateWithLifecycle()
@@ -108,10 +111,10 @@ fun TasksScreen(
     var taobaoIcon by remember { mutableStateOf<Drawable?>(null) }
     var launching by remember { mutableStateOf(false) }
 
-    // executeMessage 变化时弹 Toast
+    // executeMessage 变化时显示 Material3 Snackbar
     LaunchedEffect(executeMessage) {
         executeMessage?.let { msg ->
-            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            scope.launch { snackbarHostState.showSnackbar(msg) }
             vm.consumeExecuteMessage()
         }
     }
@@ -221,6 +224,12 @@ fun TasksScreen(
                 }
             )
         }
+
+        // Material3 Snackbar：底部居中浮层（小窗/全屏均可显示）
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 

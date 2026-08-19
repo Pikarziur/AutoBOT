@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +18,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -29,6 +30,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -42,6 +44,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.ShizukuManager
+import kotlinx.coroutines.launch
 
 /**
  * 设置页面 - Compose 实现（MAA-Meow 风格）
@@ -66,13 +69,14 @@ import com.autobot.app.manager.ShizukuManager
 @Composable
 fun SettingsScreen(modifier: Modifier = Modifier) {
     val vm: SettingsViewModel = viewModel()
-    val context = LocalContext.current
     val diagnosis by vm.diagnosis.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
-    // 收集一次性 Toast 事件并显示
+    // 收集一次性事件并显示为 Material3 Snackbar
     LaunchedEffect(Unit) {
         vm.toast.collect { msg ->
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            scope.launch { snackbarHostState.showSnackbar(msg) }
         }
     }
 
@@ -91,33 +95,41 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Surface(
-        modifier = modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+    Box(modifier = modifier.fillMaxSize()) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
         ) {
-            // 页面标题 "设置"
-            Text(
-                text = "设置",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // 页面标题 "设置"
+                Text(
+                    text = "设置",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
 
-            ShizukuCard(
-                diagnosis = diagnosis,
-                onAuthorizeClick = { vm.authorize() },
-                onOpenShizukuClick = { vm.openShizukuApp() }
-            )
+                ShizukuCard(
+                    diagnosis = diagnosis,
+                    onAuthorizeClick = { vm.authorize() },
+                    onOpenShizukuClick = { vm.openShizukuApp() }
+                )
 
-            DeviceInfoCard()
+                DeviceInfoCard()
+            }
         }
+
+        // Material3 Snackbar：底部居中浮层
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 

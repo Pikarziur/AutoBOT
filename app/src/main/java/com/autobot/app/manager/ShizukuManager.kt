@@ -78,15 +78,15 @@ object ShizukuManager {
     }
 
     /**
-     * 获取诊断文本（用于 Toast / 日志）
+     * 获取诊断文本（用于 Snackbar / 日志）
      */
     fun getDiagnosisText(context: Context, diag: ShizukuDiagnosis): String {
         return when (diag) {
-            ShizukuDiagnosis.OK -> "Shizuku 已授权"
+            ShizukuDiagnosis.OK -> "已授权"
             ShizukuDiagnosis.NOT_INSTALLED -> context.getString(R.string.shizuku_not_installed)
-            ShizukuDiagnosis.NOT_CONNECTED -> "Shizuku 服务未启动：请打开 Shizuku App 并启动服务（通过 ADB / Root）"
-            ShizukuDiagnosis.NOT_GRANTED -> "Shizuku 已连接但未授权：请打开 Shizuku App 并在「已授权的应用」中授权本应用"
-            ShizukuDiagnosis.UNKNOWN_ERROR -> "Shizuku 状态异常：请重启 Shizuku 服务后重试"
+            ShizukuDiagnosis.NOT_CONNECTED -> "Shizuku 服务未启动"
+            ShizukuDiagnosis.NOT_GRANTED -> "未授权，请到 Shizuku 中授权"
+            ShizukuDiagnosis.UNKNOWN_ERROR -> "Shizuku 异常"
         }
     }
 
