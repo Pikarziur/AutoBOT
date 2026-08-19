@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 8.0+（99.9% 用户设备）使用 Adaptive Icon：
+    - background = 蓝紫 135° 线性渐变圆角方（被系统 mask 裁剪时，角不会被切掉）
+    - foreground = 白色粗体 B（落在 72dp 安全区内，系统切方/圆/水滴都不会碰字形）
+  用户提供的新图标 = background + foreground 叠加，与 legacy ic_launcher_simple.xml 合成结果完全一致。
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/primary" />
+    <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
 </adaptive-icon>

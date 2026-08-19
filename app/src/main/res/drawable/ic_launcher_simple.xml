@@ -1,20 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Android 7.1 及以下设备（无 adaptive-icon 支持）的图标：
-  蓝色圆形背景 + 白色 BO 前景（居中缩放 0.75）
+  Legacy（API 25 及以下无 adaptive-icon 支持）设备的 App 图标合成图：
+  底层 = 135° 蓝紫渐变圆角方（与用户提供的新图一致）
+  顶层 = 白色粗体 B 字母（evenOdd 真挖空，渐变透过窗口显示）
+  该资源同时被 mipmap-anydpi-v24 的 ic_launcher / ic_launcher_round 引用。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 蓝色圆背景 -->
-    <item>
-        <shape android:shape="oval">
-            <solid android:color="@color/primary" />
-            <size
-                android:width="108dp"
-                android:height="108dp" />
-        </shape>
-    </item>
-    <!-- 前景 BO 字母 -->
-    <item
-        android:drawable="@drawable/ic_launcher_foreground"
-        android:gravity="center" />
+    <item android:drawable="@drawable/ic_launcher_background" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
 </layer-list>
