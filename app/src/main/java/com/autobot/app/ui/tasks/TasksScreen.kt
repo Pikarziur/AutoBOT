@@ -436,6 +436,33 @@ private fun FullscreenMonitor(
                 maxWidthPx to heightFromWidth
             }
 
+            // ===== 诊断日志（临时，定位完黑边问题后删除）=====
+            // 用全限定名避免 import 错误；用 ViewCompat 获取 insets 兼容所有 Android 版本
+            LaunchedEffect(previewW, previewH, maxWidthPx, maxHeightPx) {
+                val dm = context.resources.displayMetrics
+                val activity = context.findActivity()
+                val decorView = activity?.window?.decorView
+                val rootInsets = decorView?.let {
+                    androidx.core.view.ViewCompat.getRootWindowInsets(it)
+                }
+                val statusBarTop = rootInsets?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: -1
+                val navBarBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: -1
+                android.util.Log.i(
+                    "FullscreenDiag",
+                    buildString {
+                        appendLine("=== 全屏黑边诊断 ===")
+                        appendLine("VD buffer       = ${bufferWidth}x${bufferHeight} (ratio=$aspectRatio)")
+                        appendLine("BoxWithConstraints max = ${maxWidthPx.value} x ${maxHeightPx.value} (Dp)")
+                        appendLine("计算 previewW x previewH = ${previewW.value} x ${previewH.value} (Dp)")
+                        appendLine("density         = ${dm.density}")
+                        appendLine("DisplayMetrics  = ${dm.widthPixels}x${dm.heightPixels}px")
+                        appendLine("decorView size  = ${decorView?.width ?: -1}x${decorView?.height ?: -1}px")
+                        appendLine("statusBar inset top  = ${statusBarTop}px")
+                        appendLine("navBar inset bottom  = ${navBarBottom}px")
+                    }
+                )
+            }
+
             // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
             Box(
                 modifier = Modifier
