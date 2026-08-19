@@ -1,0 +1,6 @@
+# 此文件用于让 Git 跟踪空目录
+# 把 .sh 脚本文件放在本目录下（app/src/main/assets/scripts/）
+# 应用启动时 ScriptTaskManager.loadBundledScripts() 会自动扫描并装载它们
+#
+# 示例：在本目录放置 淘宝签到.sh 后，下次启动 app 即可在
+# "任务" Tab → "adb shell" 模式下拉框中看到该脚本

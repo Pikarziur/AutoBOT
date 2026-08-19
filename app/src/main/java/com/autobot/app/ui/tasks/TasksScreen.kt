@@ -956,12 +956,12 @@ private fun ModeRadioButtonRow(
  *
  * ★脚本来源（新策略）★：app 内部 `assets/scripts/` 预置 .sh 文件
  *   - 由 ScriptTaskManager.loadBundledScripts() 在启动时自动扫描并导入到
- *     filesDir/Mode1_SH/，统一通过下拉框选择
+ *     filesDir/Mode1/scripts/，统一通过下拉框选择
  *   - 不再提供运行时 +/− 按钮（脚本由项目打包，不可由用户在 app 内增删）
  *
  * 注：执行按钮位于父级 TasksTabContent 底部（跨模式），本组件不渲染执行入口
  *
- * 脚本文件存储路径：app 内部 filesDir/Mode1_SH/<uuid>_<原文件名>.sh
+ * 脚本文件存储路径：app 内部 filesDir/Mode1/scripts/<uuid>_<原文件名>.sh
  *
  * 下拉框视觉优化（与应用整体设计风格一致）：
  *   - 圆角 12dp（与项目卡片圆角对齐）
