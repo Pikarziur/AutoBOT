@@ -446,8 +446,7 @@ object ServerMain {
                 inject.invoke(im, downEvent, 0)
                 inject.invoke(im, upEvent, 0)
             } finally {
-                downEvent.recycle()
-                upEvent.recycle()
+                // KeyEvent 无 recycle()，无需回收
             }
         } catch (e: Exception) {
             Log.w(TAG, "injectKeyEvent failed: ${e.javaClass.simpleName}: ${e.message}")
