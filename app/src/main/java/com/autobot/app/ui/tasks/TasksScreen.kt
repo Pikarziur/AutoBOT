@@ -16,13 +16,17 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -411,10 +415,17 @@ private fun FullscreenMonitor(
     // 内层：实际显示区域，SurfaceView + 触摸事件 + 退出按钮都在这里
     //       这样 viewToVirtualDisplay 接收的 viewWidth/viewHeight 与 VD 比例一致，
     //       黑边偏移自然为 0，触摸点不会因误判黑边而被丢弃。
+    //
+    // 关键：用 windowInsetsPadding(systemBars + displayCutout) 抵消 decorView 比 screen 多出的空间
+    // （状态栏/导航栏隐藏后 setDecorFitsSystemWindows(false) 让 decorView 包含系统栏区域，
+    //  但屏幕顶部挖孔/相机区域实际不可见，导致 Compose 居中算出的"等距黑边"在视觉上偏下）
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .windowInsetsPadding(
+                WindowInsets.systemBars.union(WindowInsets.displayCutout)
+            )
     ) {
         BoxWithConstraints(
             modifier = Modifier.fillMaxSize(),
