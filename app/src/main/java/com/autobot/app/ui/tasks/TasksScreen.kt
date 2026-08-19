@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,12 +44,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Tab
@@ -82,7 +84,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.AppManager
-import com.autobot.app.manager.ScriptTaskManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -761,18 +762,26 @@ private fun TasksTabsSection(
 /**
  * 任务标签页
  *
- * 顶部：模式选择（adb shell / 截图识别），竖向 RadioButton + 文本，单选交互
- *   - 选中：RadioButton 实心 primary + 文字 onSurface 主色
- *   - 未选：RadioButton 描边 + 文字 onSurfaceVariant 灰
+ * 布局自上而下：
+ *   1. 模式选择（adb shell / 截图识别），竖向 RadioButton + 文本，单选交互
+ *   2. 模式对应内容区（weight(1f) 占满中部空间）
+ *      - SH-ADB：脚本下拉框 + 添加/删除按钮
+ *      - 截图识别：占位文本
+ *   3. 底部执行任务按钮（跨模式，根据当前模式启用/禁用）
+ *
+ * RadioButton 行为：
+ *   - 选中：实心 primary + onSurface 主色文字
+ *   - 未选：描边 + onSurfaceVariant 灰文字
  *   - 整行可点击（点 Row 任意位置即触发 onClick，等同于点 RadioButton）
- * 内容区：根据选中模式渲染对应 UI（SH-ADB / 截图识别占位）
  */
 @Composable
 private fun TasksTabContent(vm: MonitorViewModel) {
     val selectedMode by vm.selectedMode.collectAsStateWithLifecycle()
+    val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
+    val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 模式选择（竖向） ----------
+        // ---------- 1. 模式选择（竖向 RadioButton） ----------
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -791,30 +800,65 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             )
         }
 
-        // ---------- 模式对应内容 ----------
-        when (selectedMode) {
-            MonitorViewModel.TaskMode.SH_ADB -> ShAdbModeContent(vm)
-            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> {
-                // 截图识别模式占位（后续版本完善）
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "截图识别模式（功能开发中）",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "后续版本将完善此功能",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+        // ---------- 2. 模式对应内容区 ----------
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when (selectedMode) {
+                MonitorViewModel.TaskMode.SH_ADB -> ShAdbModeContent(vm)
+                MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> {
+                    // 截图识别模式占位（后续版本完善）
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "截图识别模式（功能开发中）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "后续版本将完善此功能",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
+        }
+
+        // ---------- 3. 底部执行任务按钮 ----------
+        // SH-ADB：选中任务且未执行时可点击
+        // 截图识别：禁用（功能开发中）
+        val canExecute = when (selectedMode) {
+            MonitorViewModel.TaskMode.SH_ADB -> selectedId != null && !isExecuting
+            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> false
+        }
+        val executeLabel = when (selectedMode) {
+            MonitorViewModel.TaskMode.SH_ADB -> if (isExecuting) "执行中..." else "执行任务"
+            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
+        }
+
+        Button(
+            onClick = { vm.executeTask() },
+            enabled = canExecute,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 8.dp)
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(executeLabel)
         }
     }
 }
@@ -868,17 +912,25 @@ private fun ModeRadioButtonRow(
 /**
  * SH-ADB 模式内容
  *
- * 顶部：[添加脚本] 按钮（SAF OpenDocument 选取 .sh 文件 → vm.importScript）
- * 列表：LazyColumn 渲染 scriptTasks，每行支持 选择/执行/删除
- * 空状态：提示"暂无任务，请添加"
+ * 单行布局：[脚本下拉框] [+] [−]
+ *   - 下拉框：显示当前选中的脚本任务名（或"请选择脚本"占位）
+ *            点击展开 DropdownMenu，列出所有 scriptTasks 供选择
+ *            空列表时显示"暂无脚本，请点击 + 添加"
+ *   - + 按钮：SAF OpenDocument 选取 .sh 文件 → vm.importScript
+ *   - − 按钮：删除当前选中任务（无选中时禁用）
+ *
+ * 注：执行按钮位于父级 TasksTabContent 底部（跨模式），本组件不渲染执行入口
  *
  * 脚本文件存储路径：app 内部 filesDir/Mode1_SH/<uuid>_<原文件名>.sh
+ *
+ * 实现说明：
+ *   - 不使用 ExposedDropdownMenuBox（material3 1.1.x 为 @ExperimentalMaterial3Api）
+ *   - 用 Box + Modifier.border + DropdownMenu 等价实现，避免实验性 API
  */
 @Composable
 private fun ShAdbModeContent(vm: MonitorViewModel) {
     val scriptTasks by vm.scriptTasks.collectAsStateWithLifecycle()
     val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
-    val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
 
     // SAF 文件选择器：OpenDocument 支持多 MIME，覆盖常见 .sh 文件类型
     val shPickerLauncher = rememberLauncherForActivityResult(
@@ -887,176 +939,116 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
         if (uri != null) vm.importScript(uri)
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 操作行：添加按钮 ----------
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.End
-        ) {
-            OutlinedButton(
-                onClick = {
-                    try {
-                        shPickerLauncher.launch(
-                            arrayOf("application/x-sh", "text/plain", "application/octet-stream")
-                        )
-                    } catch (e: Exception) {
-                        Log.e("ShAdbModeContent", "OpenDocument launcher failed", e)
-                    }
-                }
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text("添加脚本")
-            }
-        }
+    // 下拉框展开状态（remember 持有，无需提升到 VM）
+    var expanded by remember { mutableStateOf(false) }
+    val selectedTask = scriptTasks.find { it.id == selectedId }
 
-        // ---------- 任务列表 ----------
-        if (scriptTasks.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "暂无任务，请点击「添加脚本」导入 .sh 文件",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(
-                    items = scriptTasks,
-                    key = { it.id }
-                ) { task ->
-                    ShTaskRow(
-                        task = task,
-                        selected = task.id == selectedId,
-                        isExecuting = isExecuting,
-                        onSelect = { vm.selectScriptTask(task.id) },
-                        onExecute = { vm.executeTask() },
-                        onDelete = { vm.deleteScriptTask(task.id) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * SH 脚本任务行
- *
- * ListItem 三段式：
- *   leadingContent    : 单选指示圆点（实心 primary / 描边 outline）
- *   headlineContent   : 任务名（titleSmall）
- *   supportingContent : 原始文件名（bodySmall + 灰）
- *   trailingContent   : 执行 + 删除 IconButton
- * 整行 clickable → 选中该任务（vm.selectScriptTask）
- *
- * 执行按钮：仅当本行被选中 && !isExecuting 时可点（防抖 + 防误触未选中任务的执行）
- */
-@Composable
-private fun ShTaskRow(
-    task: ScriptTaskManager.ScriptTask,
-    selected: Boolean,
-    isExecuting: Boolean,
-    onSelect: () -> Unit,
-    onExecute: () -> Unit,
-    onDelete: () -> Unit
-) {
-    // 单选指示圆点：选中实心 primary，未选中描边 outline
-    val indicatorColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        Color.Transparent
-    }
-    val indicatorBorder = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline
-    }
-
-    ListItem(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { onSelect() },
-        colors = ListItemDefaults.colors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                Color.White
-            }
-        ),
-        leadingContent = {
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // ---------- 脚本下拉框（占满剩余宽度） ----------
+        Box(modifier = Modifier.weight(1f)) {
+            // 输入框样式：圆角描边 + 文本 + 下拉箭头
             Box(
                 modifier = Modifier
-                    .size(20.dp)
-                    .background(indicatorColor, CircleShape)
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .border(
-                        width = 2.dp,
-                        color = indicatorBorder,
-                        shape = CircleShape
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = RoundedCornerShape(8.dp)
                     )
-            )
-        },
-        headlineContent = {
-            Text(
-                text = task.name,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        supportingContent = {
-            Text(
-                text = task.originalName,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onExecute,
-                    enabled = selected && !isExecuting,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "执行任务",
-                        tint = if (selected && !isExecuting) {
-                            MaterialTheme.colorScheme.primary
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = selectedTask?.name ?: "请选择脚本",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (selectedTask != null) {
+                            MaterialTheme.colorScheme.onSurface
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDropDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Delete,
-                        contentDescription = "删除任务",
-                        tint = MaterialTheme.colorScheme.error
+            }
+
+            // 下拉弹出菜单（位置由框架自动计算，默认在锚点 Box 下方）
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                if (scriptTasks.isEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("暂无脚本，请点击 + 添加") },
+                        onClick = { expanded = false }
                     )
+                } else {
+                    scriptTasks.forEach { task ->
+                        DropdownMenuItem(
+                            text = { Text(task.name) },
+                            onClick = {
+                                vm.selectScriptTask(task.id)
+                                expanded = false
+                            }
+                        )
+                    }
                 }
             }
         }
-    )
+
+        // ---------- 添加按钮（SAF 选取 .sh 文件） ----------
+        IconButton(
+            onClick = {
+                try {
+                    shPickerLauncher.launch(
+                        arrayOf("application/x-sh", "text/plain", "application/octet-stream")
+                    )
+                } catch (e: Exception) {
+                    Log.e("ShAdbModeContent", "OpenDocument launcher failed", e)
+                }
+            },
+            modifier = Modifier.size(40.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = "添加脚本",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        // ---------- 删除按钮（仅当有选中任务时启用） ----------
+        IconButton(
+            onClick = { selectedId?.let { vm.deleteScriptTask(it) } },
+            enabled = selectedId != null,
+            modifier = Modifier.size(40.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Delete,
+                contentDescription = "删除脚本",
+                tint = if (selectedId != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+    }
 }
 
 /**
