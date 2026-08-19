@@ -175,7 +175,7 @@ fun TasksScreen(
                         isRunning = isRunning,
                         isSurfaceAvailable = isSurfaceAvailable,
                         displaySize = displaySize,
-                        onClick = { isFullscreen = true }
+                        onClick = { if (isRunning) isFullscreen = true }
                     ) {
                         previewContent()
                     }
@@ -299,11 +299,14 @@ private fun VirtualDisplayPreview(
 
                 // ★ 透明可点击覆盖层：在 z-order 上高于 SurfaceView 和遮罩，
                 // 直接捕获点击事件，避免 AndroidView(SurfaceView) 拦截导致 Card.clickable 失效
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(onClick = onClick)
-                )
+                // 未启动时不消费点击事件（不可进入全屏）
+                if (isRunning) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(onClick = onClick)
+                    )
+                }
 
                 // 右上角状态指示器（在最上层，不消费点击事件）
                 val (dotColor, label) = when {

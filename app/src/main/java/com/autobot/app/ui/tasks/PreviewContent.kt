@@ -135,14 +135,4 @@ fun PreviewContent(
                     }
                 }
             }
-        )
-
-        // 上层叠加 TouchPreviewOverlay 用于显示点击位置的触摸标记
-        TouchPreviewOverlay(
-            markers = touchMarkers,
-            bufferWidth = bufferWidth,
-            bufferHeight = bufferHeight,
-            modifier = Modifier.fillMaxSize()
-        )
-    }
 }
