@@ -273,7 +273,7 @@ private fun VirtualDisplayPreview(
                 .height(cardHeight),
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
-                containerColor = Color(0xFFB6B6B6)
+                containerColor = Color.Black
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
@@ -411,7 +411,7 @@ private fun FullscreenMonitor(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFB6B6B6))
+            .background(Color.Black)
     ) {
         BoxWithConstraints(
             modifier = Modifier.fillMaxSize(),
