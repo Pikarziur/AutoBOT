@@ -238,13 +238,14 @@ fun TasksScreen(
 
                     // 任务/日志 选项卡区域（淘宝启动条下方）
                     // weight(1f)：占满 70% 业务区扣除启动条之后的剩余高度
-                    // horizontal/bottom padding 让 Card 与屏幕边缘留出间距，强化"独立卡片"视觉感
+                    // start/end/bottom padding 让 Card 与屏幕边缘留出间距，强化"独立卡片"视觉感
+                    // （不能用 horizontal + bottom 混搭，Compose padding 无此重载）
                     TasksTabsSection(
                         vm = vm,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .padding(horizontal = 8.dp, bottom = 8.dp)
+                            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
                     )
                 }
             }
