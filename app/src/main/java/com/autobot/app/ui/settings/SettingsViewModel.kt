@@ -19,7 +19,7 @@ import rikka.shizuku.Shizuku
  *  - 持有 Shizuku 诊断状态（StateFlow，Compose 自动 recompose）
  *  - 注册 / 注销 Shizuku 权限结果监听器（v13+ 要求显式注册才能收到回调）
  *  - 处理授权点击分支逻辑（未安装 / 未连接 / 未授权 / 已授权 / 异常）
- *  - 通过 toast SharedFlow 通知 UI 显示 Snackbar（ViewModel 不直接显示，避免持有 Activity context）
+ *  - 通过 toast SharedFlow 通知 UI 显示 Toast（ViewModel 不直接 Toast，避免持有 Activity context）
  *
  * 生命周期：viewModel() 绑定到 Activity，切换 Tab 不重建，
  *           因此 Shizuku 监听器在整个 Activity 生命周期内有效。
@@ -34,7 +34,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _diagnosis = MutableStateFlow(ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED)
     val diagnosis: StateFlow<ShizukuManager.ShizukuDiagnosis> = _diagnosis.asStateFlow()
 
-    /** 一次性 Snackbar 事件流（extraBufferCapacity 防背压丢消息） */
+    /** 一次性 Toast 事件流（extraBufferCapacity 防背压丢消息） */
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
@@ -45,9 +45,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val permissionResultListener =
         Shizuku.OnRequestPermissionResultListener { _, grantResult ->
             if (grantResult == PackageManager.PERMISSION_GRANTED) {
-                _toast.tryEmit("授权成功")
+                _toast.tryEmit("Shizuku 授权成功")
             } else {
-                _toast.tryEmit("授权被拒绝")
+                _toast.tryEmit("Shizuku 授权被拒绝")
             }
             refreshShizukuStatus()
         }
@@ -80,32 +80,32 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     /**
      * 点击授权按钮：根据当前诊断状态分支处理
-     *   - 未安装 → Snackbar 提示
-     *   - 未连接 → Snackbar 提示并跳转 Shizuku App 启动服务
+     *   - 未安装 → Toast 提示
+     *   - 未连接 → Toast 提示并跳转 Shizuku App 启动服务
      *   - 已连接未授权 → 请求权限（弹出 Shizuku 对话框）
-     *   - 已授权 → Snackbar 提示
-     *   - 未知异常 → Snackbar 提示
+     *   - 已授权 → Toast 提示
+     *   - 未知异常 → Toast 提示
      */
     fun authorize() {
         val ctx = getApplication<Application>()
         when (_diagnosis.value) {
             ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED ->
-                _toast.tryEmit("未安装 Shizuku")
+                _toast.tryEmit("Shizuku 未安装，请先安装")
             ShizukuManager.ShizukuDiagnosis.NOT_CONNECTED -> {
-                _toast.tryEmit("请先启动 Shizuku 服务")
+                _toast.tryEmit("请先打开 Shizuku App 启动服务")
                 ShizukuManager.openShizukuApp(ctx)
             }
             ShizukuManager.ShizukuDiagnosis.NOT_GRANTED -> {
                 try {
                     ShizukuManager.requestShizukuPermission(SHIZUKU_REQUEST_CODE)
                 } catch (e: Exception) {
-                    _toast.tryEmit("请求授权失败")
+                    _toast.tryEmit("请求授权失败：${e.message}")
                 }
             }
             ShizukuManager.ShizukuDiagnosis.OK ->
-                _toast.tryEmit("已授权")
+                _toast.tryEmit("Shizuku 已授权")
             ShizukuManager.ShizukuDiagnosis.UNKNOWN_ERROR ->
-                _toast.tryEmit("Shizuku 异常")
+                _toast.tryEmit("Shizuku 状态异常，请重启 Shizuku 服务后重试")
         }
     }
 
@@ -114,7 +114,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
      */
     fun openShizukuApp() {
         if (!ShizukuManager.openShizukuApp(getApplication())) {
-            _toast.tryEmit("未找到 Shizuku")
+            _toast.tryEmit("未找到 Shizuku App")
         }
     }
 }

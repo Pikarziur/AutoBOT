@@ -124,7 +124,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isExecuting = MutableStateFlow(false)
     val isExecuting: StateFlow<Boolean> = _isExecuting.asStateFlow()
 
-    /** 最近一次任务执行的提示信息（供 UI 显示 Material3 Snackbar） */
+    /** 最近一次任务执行的提示信息（供 UI Toast/Snackbar 显示） */
     private val _executeMessage = MutableStateFlow<String?>(null)
     val executeMessage: StateFlow<String?> = _executeMessage.asStateFlow()
 
@@ -255,7 +255,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
      */
     fun importScript(uri: Uri): Boolean {
         val task = ScriptTaskManager.importScript(uri) ?: run {
-            _executeMessage.value = "导入失败"
+            _executeMessage.value = "导入脚本失败"
             return false
         }
         refreshScriptTasks()
@@ -274,7 +274,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         if (_selectedScriptTaskId.value == id) {
             _selectedScriptTaskId.value = null
         }
-        _executeMessage.value = "已删除"
+        _executeMessage.value = "已删除任务"
     }
 
     /**
@@ -299,7 +299,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         when (_selectedMode.value) {
             TaskMode.SH_ADB -> executeShAdbTask()
             TaskMode.SCREENSHOT_RECOGNITION -> {
-                _executeMessage.value = "截图识别开发中"
+                _executeMessage.value = "截图识别模式开发中，敬请期待"
                 Log.i(TAG, "Screenshot recognition mode not implemented yet")
             }
         }
@@ -311,12 +311,12 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private fun executeShAdbTask() {
         val taskId = _selectedScriptTaskId.value
         if (taskId == null) {
-            _executeMessage.value = "请先选择脚本任务"
+            _executeMessage.value = "请先选择一个 SH 脚本任务"
             return
         }
         val task = ScriptTaskManager.getTask(taskId)
         if (task == null) {
-            _executeMessage.value = "任务不存在"
+            _executeMessage.value = "任务不存在，可能已被删除"
             refreshScriptTasks()
             return
         }
@@ -324,14 +324,14 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         // 校验 Shizuku 已授权（SH 脚本通过 Shizuku 执行 ADB 指令）
         _shizukuGranted.value = ShizukuManager.isShizukuGranted()
         if (!_shizukuGranted.value) {
-            _executeMessage.value = "Shizuku 未授权"
+            _executeMessage.value = "Shizuku 未授权，无法执行 ADB 指令"
             return
         }
 
         // 校验脚本文件存在
         val scriptFile = java.io.File(task.scriptPath)
         if (!scriptFile.exists()) {
-            _executeMessage.value = "脚本文件不存在"
+            _executeMessage.value = "脚本文件不存在：${task.scriptPath}"
             return
         }
 
@@ -345,11 +345,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                     type = TaskType.SCRIPT,
                     useShizuku = true
                 )
-                _executeMessage.value = "已启动：${task.name}"
+                _executeMessage.value = "任务已启动：${task.name}"
                 Log.i(TAG, "SH-ADB task submitted: ${task.name} -> ${task.scriptPath}")
             } catch (e: Exception) {
                 Log.e(TAG, "executeShAdbTask failed", e)
-                _executeMessage.value = "启动失败"
+                _executeMessage.value = "任务启动失败：${e.message}"
             } finally {
                 _isExecuting.value = false
             }
@@ -423,7 +423,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 // 重启失败：VD 可能处于未启动状态，同步 UI 状态
                 _isRunning.value = false
-                val msg = errMsg.ifBlank { "切换方向失败" }
+                val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
                 Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed: $msg")
                 appendLog("[${stamp()}] ✗ $msg")
                 _executeMessage.value = msg
@@ -452,7 +452,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         packageName: String
     ): Pair<Boolean, String> {
         if (packageName.isBlank()) {
-            val r = false to "未选中应用"
+            val r = false to "未选中有效应用"
             _executeMessage.value = r.second; return r
         }
         // Shizuku 校验：先刷新一次状态（解决授权后仍显示未授权的缓存问题）
@@ -461,7 +461,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         if (!granted) {
             val diag = ShizukuManager.diagnoseShizuku(context)
             val detail = ShizukuManager.getDiagnosisText(context, diag)
-            val r = false to "Shizuku 未就绪：$detail"
+            val r = false to "Shizuku 未就绪，无法启动虚拟显示器与 App：$detail"
             _executeMessage.value = r.second; return r
         }
 
@@ -498,7 +498,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             _isRunning.value = true
             Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
         } else {
-            val msg = errMsg.ifBlank { "虚拟显示器启动失败" }
+            val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
             appendLog("[${stamp()}] ✗ $msg")
             val r = false to msg
             _executeMessage.value = r.second; return r
@@ -516,19 +516,19 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         val dId = compositionService.displayId
         if (dId <= 0) {
-            val r = false to "虚拟显示器未就绪"
+            val r = false to "虚拟显示器未就绪（displayId=-1），请稍后重试"
             _executeMessage.value = r.second; return r
         }
 
         // 6. 启动 App 到虚拟显示器
         val ok = AppManager.launchApp(context, packageName, dId)
         return if (ok) {
-            val r = true to "已启动 ($targetW×$targetH)"
+            val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
             _executeMessage.value = r.second
             appendLog("[${stamp()}] ✓ ${r.second}, pkg=$packageName, display=$dId")
             r
         } else {
-            val r = false to "App 启动失败"
+            val r = false to "App 启动命令失败，请确认目标应用已安装"
             _executeMessage.value = r.second
             appendLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
             r

@@ -9,10 +9,13 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -24,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
@@ -180,6 +184,8 @@ private fun MainScreen() {
  *   - itemActiveIndicatorStyle 透明 → indicatorColor = Color.Transparent
  *   - 文字水平居中 → Text.fillMaxWidth + textAlign Center
  *   - 选中文字蓝色 / 未选中文字灰色 → selectedTextColor / unselectedTextColor
+ *   - 选中时在文字下方绘制与文字同色（primary 蓝）的下划线，
+ *     替代默认 indicator（默认位置在 icon 后/文字上方，无法移动）
  */
 @Composable
 private fun BottomNavBar(
@@ -192,22 +198,37 @@ private fun BottomNavBar(
         tonalElevation = 0.dp
     ) {
         MainTab.entries.forEach { tab ->
+            val selected = currentTab == tab
             NavigationBarItem(
-                selected = currentTab == tab,
+                selected = selected,
                 onClick = { onTabSelected(tab) },
                 // 无图标：传 0dp 的 Box 占位，让 label 居中显示
                 icon = { Box(Modifier.size(0.dp)) },
                 label = {
-                    Text(
-                        text = tab.label,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = tab.label,
+                            textAlign = TextAlign.Center
+                        )
+                        // 选中时在文字下方显示下划线，颜色与选中文字一致（primary 蓝）
+                        if (selected) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 2.dp)
+                                    .width(16.dp)
+                                    .height(2.dp)
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
+                        }
+                    }
                 },
                 colors = NavigationBarItemDefaults.colors(
                     selectedTextColor = MaterialTheme.colorScheme.primary,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    indicatorColor = Color.Transparent  // 去掉选中背景色块
+                    indicatorColor = Color.Transparent  // 去掉默认选中背景色块
                 )
             )
         }
