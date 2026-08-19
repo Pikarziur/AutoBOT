@@ -4,16 +4,22 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
+import android.util.Log
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.ImageView
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,10 +29,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -37,7 +48,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +72,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -64,6 +81,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.AppManager
+import com.autobot.app.manager.ScriptTaskManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -209,6 +227,15 @@ fun TasksScreen(
                                 }
                             }
                         }
+                    )
+
+                    // 任务/日志 选项卡区域（淘宝启动条下方）
+                    // weight(1f)：占满 70% 业务区扣除启动条之后的剩余高度
+                    TasksTabsSection(
+                        vm = vm,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
                     )
                 }
             }
@@ -682,4 +709,454 @@ private fun AppIconDrawable(
             }
         }
     )
+}
+
+// ============================================================================
+// 任务 / 日志 选项卡区域（淘宝启动条下方）
+// ============================================================================
+
+/**
+ * 任务/日志 选项卡区域
+ *
+ * TabRow(M3) + 内容区：
+ *   - Tab 0 "任务"：模式切换 + 模式对应内容（SH-ADB / 截图识别占位）
+ *   - Tab 1 "日志"：实时显示 TaskManager 输出的日志
+ *
+ * 选中状态由本组件 remember 持有，无需提升到 ViewModel（与 VM 业务状态无关）
+ */
+@Composable
+private fun TasksTabsSection(
+    vm: MonitorViewModel,
+    modifier: Modifier = Modifier
+) {
+    var selectedTab by remember { mutableStateOf(0) }  // 0=任务, 1=日志
+
+    Column(modifier = modifier) {
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.primary,
+            divider = {}
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
+            )
+        }
+
+        when (selectedTab) {
+            0 -> TasksTabContent(vm)
+            1 -> LogsTabContent(vm)
+        }
+    }
+}
+
+/**
+ * 任务标签页
+ *
+ * 顶部：模式选择（adb shell / 截图识别），单选交互
+ *   - 选中模式：primary 蓝底白字
+ *   - 未选模式：surfaceVariant 浅灰底灰字（视觉弱化但可点击切换）
+ * 内容区：根据选中模式渲染对应 UI（SH-ADB / 截图识别占位）
+ */
+@Composable
+private fun TasksTabContent(vm: MonitorViewModel) {
+    val selectedMode by vm.selectedMode.collectAsStateWithLifecycle()
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ---------- 模式选择 ----------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ModeChip(
+                label = "adb shell",
+                selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
+                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) },
+                modifier = Modifier.weight(1f)
+            )
+            ModeChip(
+                label = "截图识别",
+                selected = selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION,
+                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        // ---------- 模式对应内容 ----------
+        when (selectedMode) {
+            MonitorViewModel.TaskMode.SH_ADB -> ShAdbModeContent(vm)
+            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> {
+                // 截图识别模式占位（后续版本完善）
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "截图识别模式（功能开发中）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "后续版本将完善此功能",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 模式选择 Chip
+ *
+ * - selected=true：primary 蓝底，onPrimary 白字
+ * - selected=false：surfaceVariant 浅灰底，onSurfaceVariant 灰字
+ * 始终可点击，单选交互（点未选中的 Chip 即切换到该模式）
+ */
+@Composable
+private fun ModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = containerColor,
+        contentColor = contentColor
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+    }
+}
+
+/**
+ * SH-ADB 模式内容
+ *
+ * 顶部：[添加脚本] 按钮（SAF OpenDocument 选取 .sh 文件 → vm.importScript）
+ * 列表：LazyColumn 渲染 scriptTasks，每行支持 选择/执行/删除
+ * 空状态：提示"暂无任务，请添加"
+ *
+ * 脚本文件存储路径：app 内部 filesDir/Mode1_SH/<uuid>_<原文件名>.sh
+ */
+@Composable
+private fun ShAdbModeContent(vm: MonitorViewModel) {
+    val scriptTasks by vm.scriptTasks.collectAsStateWithLifecycle()
+    val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
+    val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
+
+    // SAF 文件选择器：OpenDocument 支持多 MIME，覆盖常见 .sh 文件类型
+    val shPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) vm.importScript(uri)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ---------- 操作行：添加按钮 ----------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            OutlinedButton(
+                onClick = {
+                    try {
+                        shPickerLauncher.launch(
+                            arrayOf("application/x-sh", "text/plain", "application/octet-stream")
+                        )
+                    } catch (e: Exception) {
+                        Log.e("ShAdbModeContent", "OpenDocument launcher failed", e)
+                    }
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("添加脚本")
+            }
+        }
+
+        // ---------- 任务列表 ----------
+        if (scriptTasks.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "暂无任务，请点击「添加脚本」导入 .sh 文件",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(
+                    items = scriptTasks,
+                    key = { it.id }
+                ) { task ->
+                    ShTaskRow(
+                        task = task,
+                        selected = task.id == selectedId,
+                        isExecuting = isExecuting,
+                        onSelect = { vm.selectScriptTask(task.id) },
+                        onExecute = { vm.executeTask() },
+                        onDelete = { vm.deleteScriptTask(task.id) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * SH 脚本任务行
+ *
+ * ListItem 三段式：
+ *   leadingContent    : 单选指示圆点（实心 primary / 描边 outline）
+ *   headlineContent   : 任务名（titleSmall）
+ *   supportingContent : 原始文件名（bodySmall + 灰）
+ *   trailingContent   : 执行 + 删除 IconButton
+ * 整行 clickable → 选中该任务（vm.selectScriptTask）
+ *
+ * 执行按钮：仅当本行被选中 && !isExecuting 时可点（防抖 + 防误触未选中任务的执行）
+ */
+@Composable
+private fun ShTaskRow(
+    task: ScriptTaskManager.ScriptTask,
+    selected: Boolean,
+    isExecuting: Boolean,
+    onSelect: () -> Unit,
+    onExecute: () -> Unit,
+    onDelete: () -> Unit
+) {
+    // 单选指示圆点：选中实心 primary，未选中描边 outline
+    val indicatorColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.Transparent
+    }
+    val indicatorBorder = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.outline
+    }
+
+    ListItem(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onSelect() },
+        colors = ListItemDefaults.colors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                Color.White
+            }
+        ),
+        leadingContent = {
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .background(indicatorColor, CircleShape)
+                    .border(
+                        width = 2.dp,
+                        color = indicatorBorder,
+                        shape = CircleShape
+                    )
+            )
+        },
+        headlineContent = {
+            Text(
+                text = task.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        supportingContent = {
+            Text(
+                text = task.originalName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onExecute,
+                    enabled = selected && !isExecuting,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "执行任务",
+                        tint = if (selected && !isExecuting) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "删除任务",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    )
+}
+
+/**
+ * 日志标签页
+ *
+ * 实时显示 TaskManager 输出的所有任务日志（vm.taskLogs）
+ * 日志行格式（由 MonitorViewModel 拼装，已包含时间戳/任务名/状态/详情）：
+ *   [HH:mm:ss] [类型标记] 内容
+ *   类型标记：⟶ 启动 / ✓ 完成 / ✗ 出错 / ⏹ 停止 / [id] 输出
+ *
+ * 特性：
+ *   - LazyColumn 逐行渲染，新日志到达后自动滚动到底
+ *   - 右上角「清空」按钮调用 vm.clearLogs()
+ *   - 不同状态用不同颜色区分（绿/红/蓝/橙/黑）
+ *   - 最多 500 行（由 VM 限制），避免内存无限增长
+ */
+@Composable
+private fun LogsTabContent(vm: MonitorViewModel) {
+    val logs by vm.taskLogs.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+
+    // 日志列表新增 → 自动滚到底部（最新）
+    LaunchedEffect(logs.size) {
+        if (logs.isNotEmpty()) {
+            listState.animateScrollToItem(logs.lastIndex)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ---------- 头部：标题 + 清空按钮 ----------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "执行日志（${logs.size}）",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { vm.clearLogs() }) {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("清空")
+            }
+        }
+
+        // ---------- 日志列表 ----------
+        if (logs.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "暂无日志",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(logs) { line ->
+                    Text(
+                        text = line,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = logLineColor(line),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 日志行颜色：根据内容标记区分状态
+ * - ✓ 完成 → 绿色
+ * - ✗ 出错 → 红色
+ * - ⟶ 启动 → 蓝色
+ * - ⏹ 停止 → 橙色
+ * - 其他 → 主文字色
+ */
+@Composable
+private fun logLineColor(line: String): Color {
+    return when {
+        line.contains("✓") -> Color(0xFF4CAF50)
+        line.contains("✗") -> MaterialTheme.colorScheme.error
+        line.contains("⟶") -> MaterialTheme.colorScheme.primary
+        line.contains("⏹") -> Color(0xFFFF9800)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
 }

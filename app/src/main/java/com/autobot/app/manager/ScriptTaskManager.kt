@@ -31,8 +31,9 @@ object ScriptTaskManager {
     private const val PREFS_NAME = "autobot_script_tasks"
     private const val KEY_TASKS = "tasks_json"
 
-    /** 脚本存储子目录（在 filesDir 下） */
-    private const val SCRIPTS_DIR = "scripts"
+    /** 脚本存储子目录（在 filesDir 下）
+     *  命名为 Mode1_SH：与"模式一：adb shell"对应，便于区分后续模式（如 Mode2_截图识别） */
+    private const val SCRIPTS_DIR = "Mode1_SH"
 
     /** 内存缓存：避免每次操作都反序列化 */
     private val cachedTasks = mutableListOf<ScriptTask>()
