@@ -175,18 +175,7 @@ fun TasksScreen(
                         isRunning = isRunning,
                         isSurfaceAvailable = isSurfaceAvailable,
                         displaySize = displaySize,
-                        onClick = {
-                            // 未启动时禁止进入全屏（VD 不存在，进全屏没意义）
-                            if (!isRunning) {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "请先点击播放按钮启动虚拟显示器",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                                return@VirtualDisplayPreview
-                            }
-                            isFullscreen = true
-                        }
+                        onClick = { isFullscreen = true }
                     ) {
                         previewContent()
                     }
@@ -284,7 +273,7 @@ private fun VirtualDisplayPreview(
                 .height(cardHeight),
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
-                containerColor = Color.Black
+                containerColor = Color(0xFF333333)
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
@@ -386,11 +375,6 @@ private fun FullscreenMonitor(
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
         val originalOrientation = activity?.requestedOrientation
 
-        // 全屏时临时设置 setDecorFitsSystemWindows(false)：
-        // 让 Window 延伸到状态栏/导航栏区域，FullscreenMonitor 内部的
-        // windowInsetsPadding(systemBars) 可正确抵消这些区域，实现真正等距居中。
-        window?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
-
         controller?.let {
             it.hide(WindowInsetsCompat.Type.statusBars())
             it.systemBarsBehavior =
@@ -409,8 +393,6 @@ private fun FullscreenMonitor(
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars())
             controller?.show(WindowInsetsCompat.Type.navigationBars())
-            // 恢复默认，退出全屏后 Scaffold 能正常消费 inset
-            window?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
             if (originalOrientation != null && activity != null) {
                 activity.requestedOrientation = originalOrientation
             } else if (activity != null) {
@@ -421,100 +403,100 @@ private fun FullscreenMonitor(
     }
 
     // ============ 等比缩放 + 黑边（对齐 MAA-Meow 全屏实现） ============
-    // 关键：用 DisplayMetrics 真实屏幕尺寸替代 fillMaxSize()
-    // setDecorFitsSystemWindows(false) 会让 WindowInsets API 返回 0，
-    // windowInsetsPadding 完全失效。但 DisplayMetrics 始终返回真实屏幕尺寸，
-    // 不受任何 Window 设置影响，用它约束 BoxWithConstraints 即可实现严格等距居中。
-    val dm = context.resources.displayMetrics
-    val screenWidthDp = (dm.widthPixels / dm.density).dp
-    val screenHeightDp = (dm.heightPixels / dm.density).dp
-
+    // 外层：屏幕黑底（黑边来源）
+    // 中层：BoxWithConstraints 等比计算预览区域尺寸并居中
+    // 内层：实际显示区域，SurfaceView + 触摸事件 + 退出按钮都在这里
+    //       这样 viewToVirtualDisplay 接收的 viewWidth/viewHeight 与 VD 比例一致，
+    //       黑边偏移自然为 0，触摸点不会因误判黑边而被丢弃。
     Box(
         modifier = Modifier
-            .width(screenWidthDp)
-            .height(screenHeightDp)
-            .background(Color.Black),
-        contentAlignment = Alignment.Center
+            .fillMaxSize()
+            .background(Color.Black)
     ) {
-        // 与小窗模式 VirtualDisplayPreview 完全一致的等比缩放算法
-        val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
-            bufferWidth.toFloat() / bufferHeight.toFloat()
-        } else {
-            16f / 9f  // 兜底
-        }
-        val maxWidthPx = screenWidthDp
-        val maxHeightPx = screenHeightDp
-        val widthFromHeight = maxHeightPx * aspectRatio
-        val heightFromWidth = maxWidthPx / aspectRatio
-        val (previewW, previewH) = if (widthFromHeight <= maxWidthPx) {
-            widthFromHeight to maxHeightPx
-        } else {
-            maxWidthPx to heightFromWidth
-        }
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            // 与小窗模式 VirtualDisplayPreview 完全一致的等比缩放算法
+            val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
+                bufferWidth.toFloat() / bufferHeight.toFloat()
+            } else {
+                16f / 9f  // 兜底
+            }
+            val maxWidthPx = maxWidth
+            val maxHeightPx = maxHeight
+            val widthFromHeight = maxHeightPx * aspectRatio
+            val heightFromWidth = maxWidthPx / aspectRatio
+            val (previewW, previewH) = if (widthFromHeight <= maxWidthPx) {
+                widthFromHeight to maxHeightPx
+            } else {
+                maxWidthPx to heightFromWidth
+            }
 
-        // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
-        Box(
-            modifier = Modifier
-                .width(previewW)
-                .height(previewH)
-                .pointerInput(bufferWidth, bufferHeight) {
-                    var lastX = 0
-                    var lastY = 0
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: continue
-                            val viewX = change.position.x.toInt()
-                            val viewY = change.position.y.toInt()
+            // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
+            Box(
+                modifier = Modifier
+                    .width(previewW)
+                    .height(previewH)
+                    .pointerInput(bufferWidth, bufferHeight) {
+                        var lastX = 0
+                        var lastY = 0
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: continue
+                                val viewX = change.position.x.toInt()
+                                val viewY = change.position.y.toInt()
 
-                            val mapped = viewToVirtualDisplay(
-                                viewX = viewX,
-                                viewY = viewY,
-                                viewWidth = size.width,
-                                viewHeight = size.height,
-                                bufferWidth = bufferWidth,
-                                bufferHeight = bufferHeight
-                            )
+                                val mapped = viewToVirtualDisplay(
+                                    viewX = viewX,
+                                    viewY = viewY,
+                                    viewWidth = size.width,
+                                    viewHeight = size.height,
+                                    bufferWidth = bufferWidth,
+                                    bufferHeight = bufferHeight
+                                )
 
-                            if (mapped == null) continue
+                                if (mapped == null) continue
 
-                            val (vx, vy) = mapped
-                            when (event.type) {
-                                PointerEventType.Press -> {
-                                    lastX = vx
-                                    lastY = vy
-                                    vm.onTouchDown(vx, vy)
+                                val (vx, vy) = mapped
+                                when (event.type) {
+                                    PointerEventType.Press -> {
+                                        lastX = vx
+                                        lastY = vy
+                                        vm.onTouchDown(vx, vy)
+                                    }
+                                    PointerEventType.Move -> {
+                                        vm.onTouchMove(lastX, lastY, vx, vy)
+                                        lastX = vx
+                                        lastY = vy
+                                    }
+                                    PointerEventType.Release -> {
+                                        vm.onTouchUp(vx, vy)
+                                    }
+                                    else -> { /* ignore */ }
                                 }
-                                PointerEventType.Move -> {
-                                    vm.onTouchMove(lastX, lastY, vx, vy)
-                                    lastX = vx
-                                    lastY = vy
-                                }
-                                PointerEventType.Release -> {
-                                    vm.onTouchUp(vx, vy)
-                                }
-                                else -> { /* ignore */ }
                             }
                         }
                     }
-                }
-        ) {
-            // SurfaceView 填满实际显示区域
-            previewContent()
-
-            // 退出按钮放在画面右上角（黑边内），避免遮挡到屏幕边缘
-            IconButton(
-                onClick = onExit,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = "退出全屏",
-                    tint = Color.White
-                )
+                // SurfaceView 填满实际显示区域
+                previewContent()
+
+                // 退出按钮放在画面右上角（黑边内），避免遮挡到屏幕边缘
+                IconButton(
+                    onClick = onExit,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "退出全屏",
+                        tint = Color.White
+                    )
+                }
             }
         }
     }

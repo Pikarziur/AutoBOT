@@ -9,7 +9,6 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,7 +18,6 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -73,8 +71,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 保持默认模式（不调用 setDecorFitsSystemWindows(false)）
-        // 全屏模式由 FullscreenMonitor 的 DisposableEffect 临时设置/恢复
         checkNotificationPermission()
         setContent {
             AutoBotTheme {
@@ -152,9 +148,6 @@ private fun MainScreen() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        // 非全屏：Scaffold 消费 safeDrawing inset，状态栏/导航栏/底部 NavBar 高度转为 padding
-        // 全屏：WindowInsets(0) 不消费任何 inset，content 占满窗口
-        contentWindowInsets = if (isFullscreen) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
         bottomBar = {
             // 全屏时隐藏底部导航栏（不渲染，content 区域自动扩展到全屏）
             if (!isFullscreen) {
@@ -169,7 +162,7 @@ private fun MainScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .then(if (isFullscreen) Modifier else Modifier.padding(padding))
+                .padding(padding)
         ) {
             when (currentTab) {
                 MainTab.TASKS -> TasksScreen()

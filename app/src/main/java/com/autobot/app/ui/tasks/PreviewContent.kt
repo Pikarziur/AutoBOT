@@ -53,9 +53,7 @@ fun PreviewContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // 底色用灰色：未启动时与右上角"未启动"指示器形成统一视觉风格
-            // 运行时被 SurfaceView 帧铺满，底色不可见
-            .background(Color(0xFF424242))
+            .background(Color(0xFF333333))
     ) {
         // 不再在 AndroidView 上加 aspectRatio —— 外层 VirtualDisplayPreview 的 Card
         // 已经通过 BoxWithConstraints + 宽高比计算限定了尺寸，这里 fillMaxSize 即可
@@ -63,6 +61,8 @@ fun PreviewContent(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 SurfaceView(ctx).apply {
+                    // SurfaceView 默认背景设为深灰色，未运行时显示灰色而非纯黑
+                    setBackgroundColor(0xFF333333)
                     // 设置 holder 格式为 RGBA_8888
                     holder.setFormat(PixelFormat.RGBA_8888)
 
