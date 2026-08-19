@@ -391,9 +391,11 @@ private fun FullscreenMonitor(
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
         val originalOrientation = activity?.requestedOrientation
 
-        // 注意：setDecorFitsSystemWindows(false) 已在 MainActivity.onCreate 中调用，
-        // 这里不再重复设置（重复设置 + onDispose 恢复会破坏全屏模式）
-        // 这里只负责隐藏系统栏图标 + 锁定方向 + 保持屏幕常亮
+        // 全屏时临时设置 setDecorFitsSystemWindows(false)：
+        // 让 Window 延伸到状态栏/导航栏区域，FullscreenMonitor 内部的
+        // windowInsetsPadding(systemBars) 可正确抵消这些区域，实现真正等距居中。
+        window?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+
         controller?.let {
             it.hide(WindowInsetsCompat.Type.statusBars())
             it.systemBarsBehavior =
@@ -412,6 +414,8 @@ private fun FullscreenMonitor(
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars())
             controller?.show(WindowInsetsCompat.Type.navigationBars())
+            // 恢复默认，退出全屏后 Scaffold 能正常消费 inset
+            window?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
             if (originalOrientation != null && activity != null) {
                 activity.requestedOrientation = originalOrientation
             } else if (activity != null) {
