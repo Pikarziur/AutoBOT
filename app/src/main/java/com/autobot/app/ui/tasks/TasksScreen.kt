@@ -45,6 +45,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -911,31 +914,52 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         }
 
         // ---------- 3. 底部执行任务按钮 ----------
-        // SH-ADB：选中任务且未执行时可点击
-        // 截图识别：禁用（功能开发中）
+        // - 未执行时：绿色 「▶ 执行任务」（SH-ADB：选中任务且未执行时可点击；截图识别：禁用）
+        // - 执行中：红色 「■ 停止」（点击调用 vm.stopExecuting() → CancelHandle.cancel() → process.destroy，
+        //   真正终止 sh/脚本子进程，避免只取消协程但脚本仍继续 tap 目标 App）
         val canExecute = when (selectedMode) {
             MonitorViewModel.TaskMode.SH_ADB -> selectedId != null && !isExecuting
             MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> false
         }
-        val executeLabel = when (selectedMode) {
-            MonitorViewModel.TaskMode.SH_ADB -> if (isExecuting) "执行中..." else "执行任务"
-            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
+        val executeLabel: String
+        val isStopButton = isExecuting && selectedMode == MonitorViewModel.TaskMode.SH_ADB
+        val icon: ImageVector
+        if (isStopButton) {
+            executeLabel = "停止"
+            icon = Icons.Filled.Stop
+        } else {
+            executeLabel = when (selectedMode) {
+                MonitorViewModel.TaskMode.SH_ADB -> "执行任务"
+                MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
+            }
+            icon = Icons.Filled.PlayArrow
         }
 
         Button(
-            onClick = { vm.executeTask() },
-            enabled = canExecute,
+            onClick = { if (isStopButton) vm.stopExecuting() else vm.executeTask() },
+            // 停止按钮永远可点击（用户点"停止"肯定能点）；执行按钮走 canExecute 判定
+            enabled = isStopButton || canExecute,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = contentHPadding, vertical = 12.dp)
                 .height(48.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            )
+            colors = if (isStopButton) {
+                // 🔴 停止按钮：红色（Material3 配色没有 fixed red，用 Color.Red 明确「停止」语义）
+                ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFFF3B30),
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFFFF3B30).copy(alpha = 0.5f),
+                    disabledContentColor = Color.White.copy(alpha = 0.85f)
+                )
+            } else {
+                ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            }
         ) {
             Icon(
-                imageVector = Icons.Filled.PlayArrow,
+                imageVector = icon,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp)
             )

@@ -7,6 +7,8 @@ import java.io.File
 import java.io.InputStreamReader
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Shell 执行工具类
@@ -64,30 +66,45 @@ object ShellExecutor {
     }
 
     /**
-     * 执行 shell 命令（流式模式：stdout/stderr 逐行推给 onLine 回调）
+     * 流式命令 / 脚本执行的外部取消句柄。
      *
-     * 适用于任务日志实时打印场景，`onLine` 会在 IO 线程逐行回调，
-     * 调用方可以将日志追加到 UI StateFlow 实现实时显示。
+     * 典型用法（UI 上「执行任务」变成红色「停止」按钮点击场景）：
+     *   1) MonitorViewModel 提交任务时创建一个 CancelHandle 对象传入 executeStreaming
+     *   2) 用户点"停止" → 调用 cancelHandle.cancel()
+     *   3) drainProcessStreams 检测到 cancelled=true 后会立即 destroy 子进程退出
      *
-     * @param command   要执行的命令
-     * @param useShizuku 是否使用 Shizuku 权限执行（默认 true）
-     * @param env 附加环境变量（注入到 sh -c 之前，.sh 脚本中可通过 $KEY 读取）
-     *            例如：AUTOBOT_VD_DISPLAY_ID=11 让 am/tap 等命令走虚拟显示器
-     * @param timeout   超时时间（毫秒），默认 10 分钟（脚本任务通常比较长）
-     * @param onStdoutLine stdout 每一行的回调（参数为单行，不含换行符）；IO 线程调用
-     * @param onStderrLine stderr 每一行的回调（参数为单行，不含换行符）；IO 线程调用
-     * @return 进程退出码：0 成功，-2 超时，其他负数 执行异常
+     *   仅 cancelAndJoin 协程 Job 并不足以杀掉 Shizuku/Android 下的 RemoteProcess
+     *   （sh 还会继续跑），必须显式 process.destroy()。
      */
+    class CancelHandle {
+        private val requested = AtomicBoolean(false)
+        private val processRef = AtomicReference<Process?>(null)
+
+        /** 标记"取消请求"，下次 drainProcessStreams 轮询时会 destroy 进程。 */
+        fun cancel() {
+            requested.set(true)
+            // 如果此时 process 已绑定并正在 waitFor，直接 destroy 立刻唤醒轮询。
+            processRef.get()?.let { p ->
+                runCatching { p.destroy() }
+            }
+        }
+
+        internal fun isRequested(): Boolean = requested.get()
+        internal fun bindProcess(p: Process) { processRef.set(p) }
+        internal fun unbindProcess() { processRef.set(null) }
+    }
+
     fun executeStreaming(
         command: String,
         useShizuku: Boolean = true,
         env: Map<String, String> = emptyMap(),
         timeout: Long = 600_000L,
+        cancel: CancelHandle? = null,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return try {
-            executeStreamingInternal(command, useShizuku, env, timeout, onStdoutLine, onStderrLine)
+            executeStreamingInternal(command, useShizuku, env, timeout, cancel, onStdoutLine, onStderrLine)
         } catch (e: Exception) {
             Log.e(TAG, "Streaming execute error: $command", e)
             -1
@@ -102,13 +119,14 @@ object ShellExecutor {
         useShizuku: Boolean,
         env: Map<String, String>,
         timeout: Long,
+        cancel: CancelHandle?,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return if (useShizuku && ShizukuManager.isShizukuGranted()) {
-            executeWithShizukuStreaming(command, env, timeout, onStdoutLine, onStderrLine)
+            executeWithShizukuStreaming(command, env, timeout, cancel, onStdoutLine, onStderrLine)
         } else {
-            executeWithNormalStreaming(command, env, timeout, onStdoutLine, onStderrLine)
+            executeWithNormalStreaming(command, env, timeout, cancel, onStdoutLine, onStderrLine)
         }
     }
 
@@ -163,9 +181,10 @@ object ShellExecutor {
      * @param env 附加环境变量（AUTOBOT_VD_DISPLAY_ID 等）
      * @param args 传递给脚本的参数
      * @param timeout 超时（毫秒），默认 10 分钟
+     * @param cancel 可选：外部取消句柄（红色停止按钮触发 → process.destroy()）
      * @param onStdoutLine stdout 每一行的回调；IO 线程调用
      * @param onStderrLine stderr 每一行的回调；IO 线程调用
-     * @return 进程退出码
+     * @return 进程退出码：0 成功；-2 超时；-3 外部取消；其他负数：异常
      */
     fun executeScriptStreaming(
         scriptPath: String,
@@ -173,6 +192,7 @@ object ShellExecutor {
         env: Map<String, String> = emptyMap(),
         vararg args: String,
         timeout: Long = 600_000L,
+        cancel: CancelHandle? = null,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
@@ -192,7 +212,7 @@ object ShellExecutor {
 
         val exit = try {
             executeStreaming(
-                finalCmd.first, useShizuku, env, timeout,
+                finalCmd.first, useShizuku, env, timeout, cancel,
                 onStdoutLine = onStdoutLine,
                 onStderrLine = onStderrLine
             )
@@ -805,6 +825,7 @@ object ShellExecutor {
         command: String,
         env: Map<String, String>,
         timeout: Long,
+        cancel: CancelHandle?,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
@@ -822,8 +843,12 @@ object ShellExecutor {
             )
             newProcessMethod.isAccessible = true
             val process = newProcessMethod.invoke(null, cmdArray, null, null) as Process
-
-            drainProcessStreams(process, timeout, onStdoutLine, onStderrLine)
+            cancel?.bindProcess(process)
+            try {
+                drainProcessStreams(process, timeout, cancel, onStdoutLine, onStderrLine)
+            } finally {
+                cancel?.unbindProcess()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Shizuku streaming execute error: $command", e)
             onStderrLine("[EXCEPTION] ${e.message ?: "Shizuku execute error"}")
@@ -838,13 +863,19 @@ object ShellExecutor {
         command: String,
         env: Map<String, String>,
         timeout: Long,
+        cancel: CancelHandle?,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return try {
             val fullCmd = buildEnvPrefix(env) + command
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", fullCmd))
-            drainProcessStreams(process, timeout, onStdoutLine, onStderrLine)
+            cancel?.bindProcess(process)
+            try {
+                drainProcessStreams(process, timeout, cancel, onStdoutLine, onStderrLine)
+            } finally {
+                cancel?.unbindProcess()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Normal streaming execute error: $command", e)
             onStderrLine("[EXCEPTION] ${e.message ?: "Normal execute error"}")
@@ -871,11 +902,16 @@ object ShellExecutor {
      * 读取 Process 的 stdout/stderr 流，并逐行回调给 onStdoutLine / onStderrLine。
      * 内部在独立线程读取两条流，避免死锁（Process 输出缓冲区满时阻塞）。
      *
-     * @return 进程退出码：0 成功；-2 超时；其他负数 执行异常
+     * 支持两种主动终止（立即 destroyProcess）：
+     *   - 超时（timeout ms）：返回 -2
+     *   - [cancel] 句柄被外部 cancel()：返回 -3
+     *
+     * @return 进程退出码：0 成功；-2 超时；-3 外部取消；其他负数 执行异常
      */
     private fun drainProcessStreams(
         process: Process,
         timeout: Long,
+        cancel: CancelHandle?,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
@@ -928,8 +964,24 @@ object ShellExecutor {
         val startTime = System.currentTimeMillis()
         var exitCode = -1
         var finished = false
+        /** 进入 while 之前用户就可能已经 cancel 了，先检测一次 */
+        val alreadyCancelled = cancel?.isRequested() == true
+
+        if (alreadyCancelled) {
+            try { process.destroy() } catch (_: Exception) {}
+            try { stdoutThread.join(1000) } catch (_: InterruptedException) {}
+            try { stderrThread.join(1000) } catch (_: InterruptedException) {}
+            return -3
+        }
 
         while (!finished && (System.currentTimeMillis() - startTime) < timeout) {
+            if (cancel?.isRequested() == true) {
+                // 用户点击停止：立即 destroy 子进程（shell + 脚本正在执行的所有子命令）
+                try { process.destroy() } catch (_: Exception) {}
+                try { stdoutThread.join(1000) } catch (_: InterruptedException) {}
+                try { stderrThread.join(1000) } catch (_: InterruptedException) {}
+                return -3
+            }
             try {
                 exitCode = process.exitValue()
                 finished = true

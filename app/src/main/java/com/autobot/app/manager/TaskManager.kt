@@ -16,8 +16,9 @@ import kotlinx.coroutines.cancelAndJoin
  */
 object TaskManager {
 
-    // 运行中的任务：taskId -> (TaskInfo, Job)
-    private val runningTasks = mutableMapOf<String, Pair<TaskInfo, Job>>()
+    // 运行中的任务：taskId -> (TaskInfo, Job, CancelHandle)
+    // CancelHandle 用于用户点红色停止按钮时，真正 destroy 正在执行的 sh 子进程
+    private val runningTasks = mutableMapOf<String, Triple<TaskInfo, Job, ShellExecutor.CancelHandle>>()
 
     // 任务历史
     private val taskHistory = mutableListOf<TaskInfo>()
@@ -89,11 +90,15 @@ object TaskManager {
             env = env
         )
 
+        // 每一个任务独立一个取消句柄。外部 stopTask(id) 会调 cancelHandle.cancel()，
+        // 让 ShellExecutor.drainProcessStreams 立即 process.destroy 子进程。
+        val cancelHandle = ShellExecutor.CancelHandle()
+
         val job = coroutineScope.launch {
-            executeTaskInternal(task)
+            executeTaskInternal(task, cancelHandle)
         }
 
-        runningTasks[task.id] = Pair(task, job)
+        runningTasks[task.id] = Triple(task, job, cancelHandle)
         taskHistory.add(0, task)
 
         // 通知任务开始
@@ -109,8 +114,10 @@ object TaskManager {
      * 关键：调用 ShellExecutor 流式 API，stdout/stderr 每一行
      *       1. 追加到 task.output 保留历史
      *       2. 通过 TaskListener.onTaskOutput 通知所有观察者（UI 实时日志显示）
+     *
+     * @param cancel 任务取消句柄：外部 stopTask(taskId) → cancel.cancel() → process.destroy
      */
-    private suspend fun executeTaskInternal(task: TaskInfo) {
+    private suspend fun executeTaskInternal(task: TaskInfo, cancel: ShellExecutor.CancelHandle) {
         try {
             // 统一给每行加「时间戳 + stdout/stderr」前缀，便于日志观察
             val prefix = "[${task.id.substring(0, 4)}] "
@@ -127,6 +134,7 @@ object TaskManager {
                 TaskType.COMMAND -> {
                     ShellExecutor.executeStreaming(
                         task.command, task.useShizuku, task.env,
+                        cancel = cancel,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
@@ -134,6 +142,7 @@ object TaskManager {
                 TaskType.SCRIPT -> {
                     ShellExecutor.executeScriptStreaming(
                         task.command, task.useShizuku, task.env,
+                        cancel = cancel,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
@@ -141,6 +150,7 @@ object TaskManager {
                 TaskType.ADB -> {
                     ShellExecutor.executeStreaming(
                         task.command, task.useShizuku, task.env,
+                        cancel = cancel,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
@@ -148,6 +158,16 @@ object TaskManager {
             }
 
             if (task.status == TaskStatus.STOPPED) {
+                return
+            }
+
+            // exitCode == -3 是 ShellExecutor 新语义：外部取消（已经 process.destroy 过）
+            // 直接按"停止"流程走，不要当成错误。
+            if (exitCode == -3 || cancel.isRequested()) {
+                task.status = TaskStatus.STOPPED
+                task.endTime = System.currentTimeMillis()
+                runningTasks.remove(task.id)
+                listeners.forEach { it.onTaskStopped(task) }
                 return
             }
 
@@ -169,6 +189,15 @@ object TaskManager {
             if (task.status == TaskStatus.STOPPED) {
                 return
             }
+            // job.cancel() 会抛 CancellationException；此时再配合 cancel.cancel() 状态
+            // 说明用户主动停止，按"停止"流程记日志。
+            if (cancel.isRequested()) {
+                task.status = TaskStatus.STOPPED
+                task.endTime = System.currentTimeMillis()
+                runningTasks.remove(task.id)
+                listeners.forEach { it.onTaskStopped(task) }
+                return
+            }
             task.status = TaskStatus.ERROR
             task.endTime = System.currentTimeMillis()
             val errLine = "[EXCEPTION] ${e.message ?: "Unknown error"}"
@@ -180,19 +209,24 @@ object TaskManager {
     }
 
     /**
-     * 停止任务
+     * 停止指定任务
+     *   1) CancelHandle.cancel() → 立刻 destroy sh Process（脚本子进程也被杀）
+     *   2) 再 cancelAndJoin 协程（双重保险）
      */
     fun stopTask(taskId: String): Boolean {
-        val pair = runningTasks[taskId] ?: return false
-        val (task, job) = pair
+        val triple = runningTasks[taskId] ?: return false
+        val (task, job, cancelHandle) = triple
 
         task.status = TaskStatus.STOPPED
         task.endTime = System.currentTimeMillis()
 
+        // 先让 ShellExecutor 里 process 立刻停（否则只 cancelJob，sh 脚本还会继续跑）
+        cancelHandle.cancel()
+
         coroutineScope.launch {
             try {
                 job.cancelAndJoin()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 // 忽略取消时的异常
             }
             runningTasks.remove(taskId)
@@ -200,6 +234,17 @@ object TaskManager {
         }
 
         return true
+    }
+
+    /**
+     * 停止所有运行中的任务（UI 上「红色停止」按钮一键停止用）
+     * @return 实际终止的任务数量
+     */
+    fun stopAllTasks(): Int {
+        val ids = runningTasks.keys.toList()
+        var count = 0
+        ids.forEach { if (stopTask(it)) count++ }
+        return count
     }
 
     /**

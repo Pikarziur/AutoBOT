@@ -15,10 +15,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DisplaySettings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -116,6 +125,13 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 onOpenShizukuClick = { vm.openShizukuApp() }
             )
 
+            // VD 分辨率模式（仿 MAA-Meow 的 720P / 1080P）：放在 Shizuku 组件下方
+            val vdMode by vm.vdResolutionMode.collectAsStateWithLifecycle()
+            VirtualDisplayResolutionCard(
+                selectedMode = vdMode,
+                onModeSelected = { vm.setVdResolutionMode(it) }
+            )
+
             DeviceInfoCard()
         }
     }
@@ -207,6 +223,141 @@ private fun ShizukuCard(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 虚拟显示器（VD）分辨率模式卡片 —— 仿 MAA-Meow 的 720P / 1080P 双档，默认 720P。
+ *
+ * 布局（纯白卡片 12dp 圆角 0 阴影，与 Shizuku / 关于 风格统一）：
+ *   标题行：
+ *     左   Icons.Filled.DisplaySettings + "虚拟显示器分辨率" （17sp SemiBold）
+ *     右   辅助提示 "下一次启动 VD 生效"
+ *   选项卡（.selectableGroup，竖向 RadioButton + 文字 + 二级分辨率说明）：
+ *     ◉ 720P（720×1280，省内存·流畅）
+ *        ↳ 建议 2~4GB 小运存设备；预览 & 点击更快；淘宝/短视频主流脚本足够清晰
+ *     ○ 1080P（1080×1920，清晰·耗内存）
+ *        ↳ 建议 6GB+ 设备；小控件/OCR 等需要高像素密度场景；预览和 JPEG 传输延迟略高
+ *
+ * 选中变更会由 onModeSelected → SettingsViewModel 持久化，Toast 提示"下次启动 VD 生效"。
+ */
+@Composable
+private fun VirtualDisplayResolutionCard(
+    selectedMode: VdResolutionMode,
+    onModeSelected: (VdResolutionMode) -> Unit
+) {
+    val options = VdResolutionMode.values().asList()
+
+    // 每个档位下面一行二级说明（根据档位写死，避免塞进枚举带太多 UI 字段）
+    fun subTitle(mode: VdResolutionMode): String = when (mode) {
+        VdResolutionMode.VD_720P ->
+            "建议 2~4GB 小运存设备 · 预览更流畅 · 淘宝/任务脚本足够清晰"
+        VdResolutionMode.VD_1080P ->
+            "建议 6GB+ 设备 · 小控件/OCR 更清晰 · JPEG 预览延迟略高"
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 标题行：左（图标+文本） 右（辅助提示）
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DisplaySettings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "虚拟显示器分辨率",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Text(
+                    text = "下一次启动 VD 生效",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // 选项组（竖向 RadioButton 单选，selectableGroup 语义无障碍）
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                options.forEach { mode ->
+                    VdModeOptionRow(
+                        mode = mode,
+                        subTitle = subTitle(mode),
+                        selected = (mode == selectedMode),
+                        onClick = { onModeSelected(mode) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** VD 档位单行：RadioButton ＋（档位名 ＋ 二级说明列） */
+@Composable
+private fun VdModeOptionRow(
+    mode: VdResolutionMode,
+    subTitle: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(
+                selected = selected,
+                onClick = onClick,
+                role = androidx.compose.ui.semantics.Role.RadioButton
+            )
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = null, // 由 Row.selectable 统一接管点击
+            colors = RadioButtonDefaults.colors(
+                selectedColor = MaterialTheme.colorScheme.primary
+            )
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = mode.displayName,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subTitle,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

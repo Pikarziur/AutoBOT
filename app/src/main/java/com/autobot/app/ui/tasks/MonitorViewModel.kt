@@ -55,9 +55,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _previewSurface = MutableStateFlow<Surface?>(null)
     val previewSurface: StateFlow<Surface?> = _previewSurface.asStateFlow()
 
-    /** 虚拟显示器分辨率 */
+    /** 虚拟显示器分辨率（默认按设置档位初始化，而不是 540×960） */
     private val _displaySize = MutableStateFlow(
-        CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT
+        with(CompositionService.resolveMode(application)) { width to height }
     )
     val displaySize: StateFlow<Pair<Int, Int>> = _displaySize.asStateFlow()
 
@@ -189,6 +189,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val okHint = if (dId > 0 && vW != "-") "✅" else "⚠️"
             appendScriptLog("[${stamp()}] $okHint VD 注入：display=$dId, size=${vW}x$vH, target=$pkg" +
                     if (dId <= 0) "  → 注：display=0 将落到主屏，操作会打 AutoBOT！" else "")
+            // 同步执行状态：有任务 running → 按钮变红色停止
+            _isExecuting.value = TaskManager.hasRunningTasks()
         }
         override fun onTaskOutput(task: com.autobot.app.model.TaskInfo, line: String) {
             appendScriptLog("[${stamp()}] [${task.id.substring(0, 4)}] $line")
@@ -196,12 +198,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         override fun onTaskCompleted(task: com.autobot.app.model.TaskInfo) {
             val duration = task.getDurationText()
             appendScriptLog("[${stamp()}] ✓ 任务『${task.name}』完成 (exit=${task.exitCode}, duration=$duration)")
+            _isExecuting.value = TaskManager.hasRunningTasks()
         }
         override fun onTaskStopped(task: com.autobot.app.model.TaskInfo) {
             appendScriptLog("[${stamp()}] ⏹ 任务『${task.name}』被停止 (id=${task.id.substring(0, 4)})")
+            _isExecuting.value = TaskManager.hasRunningTasks()
         }
         override fun onTaskError(task: com.autobot.app.model.TaskInfo, error: String) {
             appendScriptLog("[${stamp()}] ✗ 任务『${task.name}』出错: $error")
+            _isExecuting.value = TaskManager.hasRunningTasks()
         }
     }
 
@@ -445,6 +450,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                     if (!ok) {
                         _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
                         appendLauncherLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
+                        _isExecuting.value = false
                         return@launch
                     }
                 }
@@ -454,7 +460,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 // 分支之后再读取。
                 val (vdW, vdH) = _vdTargetSize.value
                     ?: _displaySize.value.takeIf { it.first > 0 }
-                    ?: (CompositionService.DEFAULT_WIDTH to CompositionService.DEFAULT_HEIGHT)
+                    ?: with(CompositionService.resolveMode(getApplication())) { width to height }
 
                 // -------【关键：主屏（手机）物理分辨率 = 用户写脚本时的基准分辨率】-------
                 // 用户说"脚本坐标按手机分辨率写的，不想改 .sh"，那就统一主屏真实尺寸作为 BASE：
@@ -494,6 +500,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScriptStreaming）
                 // - displayId：TaskManager 内部会合并为 AUTOBOT_VD_DISPLAY_ID
                 // - extraEnv：vdW/vdH/targetPkg 供脚本按 VD 坐标系操作目标 App
+                // 注意：这里不再 finally 立刻重置 isExecuting=false，而是交给 taskListener
+                // （onTaskStarted / onTaskStopped / onTaskCompleted / onTaskError）同步。
+                // TaskManager.submitTask 是同步立即返回的；真正脚本进程生命周期由 TaskListener 维护。
                 TaskManager.submitTask(
                     name = task.name,
                     command = task.scriptPath,
@@ -509,10 +518,26 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             } catch (e: Exception) {
                 Log.e(TAG, "executeShAdbTask failed", e)
                 _executeMessage.value = "任务启动失败：${e.message}"
-            } finally {
                 _isExecuting.value = false
             }
+            // 成功路径不设 false：提交成功后 TaskManager 实际 running，交给 taskListener 同步状态。
         }
+    }
+
+    /**
+     * 停止当前正在执行的任务（UI 红色「■ 停止」按钮点击）：
+     *   1) TaskManager.stopAllTasks() → 对每个 task.cancelHandle.cancel() → process.destroy
+     *      保证 sh/脚本子进程被立即终止（否则只取消协程，shell 还在继续 tap）
+     *   2) 同时取消本 ViewModel 当前启动期协程（双重保险）
+     */
+    fun stopExecuting() {
+        if (!_isExecuting.value && !TaskManager.hasRunningTasks()) {
+            return
+        }
+        val cnt = TaskManager.stopAllTasks()
+        appendLauncherLog("[${stamp()}] ⏹ 用户点击停止：已请求结束 $cnt 个任务")
+        _isExecuting.value = TaskManager.hasRunningTasks()
+        _executeMessage.value = if (cnt > 0) "已停止 $cnt 个任务" else "当前没有运行中的任务"
     }
 
     // ==================== 虚拟显示器相关 ====================
@@ -523,11 +548,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
      *   - Shizuku 未授权 → 直接失败并打日志（UI 应在调用前引导用户授权）
      *   - Shizuku 已授权 → CompositionService.startVirtualDisplay → DisplayServiceShizuku
      *
-     * @param width  虚拟显示器宽度
-     * @param height 虚拟显示器高度
+     * 默认不传 width/height：根据"设置页 VD 分辨率档位（720P / 1080P，默认 720P）"自动取值。
+     * 显式传 width/height：走旧的调用路径，density 仍跟随档位（保证 VD 内 UI 大小一致）。
      */
-    fun startVirtualDisplay(width: Int = CompositionService.DEFAULT_WIDTH,
-                            height: Int = CompositionService.DEFAULT_HEIGHT) {
+    fun startVirtualDisplay(width: Int = -1, height: Int = -1) {
         if (_isRunning.value) {
             Log.i(TAG, "VirtualDisplay already running")
             return
@@ -540,15 +564,27 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        // 未指定宽高时，按设置档位取值（档位 720P→720×1280, 1080P→1080×1920）
+        val mode = CompositionService.resolveMode(getApplication())
+        val realW = if (width > 0) width else mode.width
+        val realH = if (height > 0) height else mode.height
+
         viewModelScope.launch(Dispatchers.IO) {
-            val (surface, errMsg) = compositionService.startVirtualDisplay(width, height)
+            // 若调用者没传宽/高（= 按档位启动），就走无参 startVirtualDisplay()
+            // 保证 CompositionService.currentMode、densityDpi 都正确设置
+            val (surface, errMsg) =
+                if (width <= 0 && height <= 0) compositionService.startVirtualDisplay()
+                else compositionService.startVirtualDisplay(realW, realH)
             // 新架构下 VD 由 server 进程创建，App 端不再持有 VD Surface。
             // 用 errMsg 是否为空来判断成功/失败（而非 surface != null）
             if (errMsg.isBlank()) {
-                _displaySize.value = width to height
+                _displaySize.value = realW to realH
                 _isLandscape.value = compositionService.isLandscape
                 _isRunning.value = true
-                Log.i(TAG, "VirtualDisplay launched: ${width}x${height} (landscape=${_isLandscape.value})")
+                Log.i(TAG, "VirtualDisplay launched: ${realW}x${realH} " +
+                        "(mode=${compositionService.vdMode.name}, " +
+                        "density=${compositionService.densityDpi}, " +
+                        "landscape=${_isLandscape.value})")
             } else {
                 val msg = errMsg.ifBlank { "VirtualDisplay launch failed" }
                 Log.e(TAG, msg)
@@ -595,10 +631,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
      *
      * 流程：
      *   1. 查询 App 的 Manifest 声明方向 (PORTRAIT / LANDSCAPE / UNSPECIFIED)
-     *   2. 根据方向换算目标 VD 分辨率：
-     *        PORTRAIT    → 540 x 960
-     *        LANDSCAPE   → 960 x 540
-     *        UNSPECIFIED → 保持当前 VD 不重建（默认竖屏兜底）
+     *   2. 根据"设置档位（720P / 1080P，默认 720P）" + 方向换算目标 VD 分辨率：
+     *        PORTRAIT    → 档位宽 x 档位高（720×1280 或 1080×1920）
+     *        LANDSCAPE   → 档位高 x 档位宽（1280×720 或 1920×1080）
+     *        UNSPECIFIED → 保持档位的竖屏尺寸
      *   3. 若目标分辨率与当前不一致 → 调用 restartVirtualDisplay 重建 VD
      *   4. 启动 App 到虚拟显示器 (am start --display <id>)
      *
@@ -634,18 +670,20 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         val pref = AppManager.getAppPreferredOrientation(context, packageName)
         Log.i(TAG, "launchAppWithOrientationAdaptation: pkg=$packageName orientation=$pref")
 
-        // 2. 换算目标分辨率（竖屏基准 540x960，横屏则交换）
+        // 2. 先读档位：720P → (720, 1280)；1080P → (1080, 1920)；然后按方向交换宽高
+        val mode = CompositionService.resolveMode(context)
+        val (baseW, baseH) = mode.width to mode.height
         val targetW: Int
         val targetH: Int
         when (pref) {
             AppManager.AppOrientation.LANDSCAPE -> {
-                targetW = CompositionService.DEFAULT_HEIGHT  // 960
-                targetH = CompositionService.DEFAULT_WIDTH   // 540
+                targetW = baseH   // 横屏：档位 H 作为宽（1280 / 1920）
+                targetH = baseW   //      档位 W 作为高（720 / 1080）
             }
             else -> {
-                // PORTRAIT / UNSPECIFIED 都用竖屏（UNSPECIFIED 默认竖屏兜底）
-                targetW = CompositionService.DEFAULT_WIDTH   // 540
-                targetH = CompositionService.DEFAULT_HEIGHT  // 960
+                // PORTRAIT / UNSPECIFIED 都用档位默认竖屏
+                targetW = baseW
+                targetH = baseH
             }
         }
 
@@ -659,13 +697,18 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             _vdTargetPackage.value = null
             _vdTargetSize.value = null
         }
-        appendLauncherLog("[${stamp()}] ⟶ 启动虚拟显示器 ${targetW}x$targetH 并启动 pkg=$packageName")
-        val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
+        appendLauncherLog("[${stamp()}] ⟶ 启动虚拟显示器 ${targetW}x$targetH " +
+                "(mode=${mode.name}) 并启动 pkg=$packageName")
+        // 启动 VD：走 startVirtualDisplay(targetW, targetH, densityDpi=mode.dpi)
+        // 保证 density 跟随档位（720P→320 / 1080P→420）
+        val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH, mode.dpi)
         if (errMsg.isBlank()) {
             _displaySize.value = targetW to targetH
             _isLandscape.value = compositionService.isLandscape
             _isRunning.value = true
-            Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
+            Log.i(TAG, "VD freshly started at ${targetW}x$targetH " +
+                    "(mode=${compositionService.vdMode.name}, " +
+                    "density=${compositionService.densityDpi}) for app $packageName")
         } else {
             val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
             appendLauncherLog("[${stamp()}] ✗ $msg")

@@ -12,6 +12,7 @@ import com.autobot.app.server.VDProtocol
 import com.autobot.app.server.VDRequest
 import com.autobot.app.server.VDResponse
 import com.autobot.app.third.DisplayManagerHelper
+import com.autobot.app.ui.settings.VdResolutionMode
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -71,9 +72,23 @@ class CompositionService(private val context: Context) {
     companion object {
         private const val TAG = "CompositionSvc"
 
+        /**
+         * 分辨率预设（仿 MAA-Meow：720P 默认、1080P 高配）
+         *
+         * 真实尺寸与密度都委托给枚举 VdResolutionMode 单点定义，
+         * 保证"设置页 → MonitorViewModel → ShellExecutor"都读到同一组值。
+         */
+        @Deprecated("请改用 VdResolutionMode.resolveCurrent(context) 获取当前生效档位")
         const val DEFAULT_WIDTH = 540
+        @Deprecated("请改用 VdResolutionMode.resolveCurrent(context) 获取当前生效档位")
         const val DEFAULT_HEIGHT = 960
+        @Deprecated("请改用 VdResolutionMode.resolveCurrent(context).dpi")
         const val DEFAULT_DPI = 240
+
+        /** 读取当前生效的 VD 档位：SharedPreferences > 默认 720P。Service/VM/UI 通用。 */
+        @JvmStatic
+        fun resolveMode(ctx: Context): VdResolutionMode = VdResolutionMode.readFromPrefs(ctx)
+
         private const val VIRTUAL_DISPLAY_NAME = "AutoBOT-VirtualDisplay"
         private const val PING_INTERVAL_MS = 5_000L
         private const val SERVER_HANDSHAKE_TIMEOUT_MS = 8_000L
@@ -116,16 +131,45 @@ class CompositionService(private val context: Context) {
     @Volatile
     private var cachedDisplayId: Int = -1
 
-    var width: Int = DEFAULT_WIDTH
+    /** 本次启动 VD 实际使用的档位（720P / 1080P）。未启动时为"当前设置"。 */
+    private var currentMode: VdResolutionMode = resolveMode(context)
+
+    var width: Int = currentMode.width
         private set
-    var height: Int = DEFAULT_HEIGHT
+    var height: Int = currentMode.height
+        private set
+    /** 本次启动 VD 实际使用的 densityDpi（= 档位.dpi），createVirtualDisplay 会用到。 */
+    var densityDpi: Int = currentMode.dpi
         private set
 
     val isLandscape: Boolean get() = width > height
     val displayId: Int get() = cachedDisplayId
+    /** 对外暴露当前档位（设置页 → 日志 / 任务缩放 BASE→VD 时要用） */
+    val vdMode: VdResolutionMode get() = currentMode
 
-    fun startVirtualDisplay(width: Int = DEFAULT_WIDTH,
-                            height: Int = DEFAULT_HEIGHT): Pair<android.view.Surface?, String> {
+    /**
+     * 无参启动 VD：根据 Settings 的 720P/1080P 档位读取宽高与 DPI 启动。
+     * 设置改档位后，旧 VD 不热切换（热切换需要先 stop 再 start，在 UI 里以 Toast 明确说明）。
+     */
+    fun startVirtualDisplay(): Pair<android.view.Surface?, String> {
+        val mode = resolveMode(context)
+        currentMode = mode
+        return startVirtualDisplay(mode.width, mode.height, mode.dpi)
+    }
+
+    /**
+     * 兼容老调用：显式指定宽高时，DPI 用档位默认（= resolveMode(context).dpi），
+     * 避免新设置下 density 不匹配导致 VD 里 UI 大小异常。
+     */
+    fun startVirtualDisplay(width: Int, height: Int): Pair<android.view.Surface?, String> {
+        val mode = resolveMode(context)
+        return startVirtualDisplay(width, height, mode.dpi)
+    }
+
+    /** 最终实现：(width, height, densityDpi) 三参数启动。上面两个 overload 最终走这里。 */
+    fun startVirtualDisplay(width: Int,
+                            height: Int,
+                            densityDpi: Int): Pair<android.view.Surface?, String> {
         if (cachedDisplayId > 0) {
             Log.w(TAG, "VirtualDisplay already running, stop first")
             return null to ""
@@ -163,6 +207,7 @@ class CompositionService(private val context: Context) {
 
         this.width = width
         this.height = height
+        this.densityDpi = densityDpi
 
         return try {
             // step2: 初始化 NativeCapturer（仅分配 frameBuffer + 准备 preview blit）
@@ -213,12 +258,13 @@ class CompositionService(private val context: Context) {
             }, "autobot-server-stderr").apply { isDaemon = true; start() }
 
             // step4: 发 CREATE_VD（注意！不再带 Surface Parcel，server 自己创建 ImageReader）
-            Log.i(TAG, "step4 send MSG_CREATE_VD ...")
+            Log.i(TAG, "step4 send MSG_CREATE_VD mode=${currentMode.name} " +
+                    "(${width}x${height}@${densityDpi}dpi) ...")
             val flags = DisplayManagerHelper.buildDisplayFlags()
             val request = VDRequest(
                 width = width,
                 height = height,
-                density = DEFAULT_DPI,
+                density = densityDpi,        // 720P → 320, 1080P → 420，档位配套密度
                 flags = flags,
                 name = VIRTUAL_DISPLAY_NAME,
                 jpegQuality = JPEG_QUALITY,
