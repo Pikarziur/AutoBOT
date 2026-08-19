@@ -182,6 +182,52 @@ object ScriptTaskManager {
     }
 
     /**
+     * 从原始内容导入 SH 脚本（用于 Shizuku `cat` 读取的字符串内容）
+     *
+     * 与 [importScript] 的差异：内容来自 String 而非 SAF Uri，**绕开"安全浏览"过滤**。
+     * Shizuku 走 shell uid 直接 `cat` 文件，不经过 SAF picker，能读到被系统
+     * 安全浏览隐藏/拦截的 .sh 文件。
+     *
+     * @param name         任务展示名（一般取文件名去掉 .sh 后缀）
+     * @param content      脚本文件完整内容
+     * @param originalName 原始文件名（含 .sh 扩展名，仅用于内部存储文件命名）
+     * @return 成功返回 ScriptTask；失败返回 null
+     */
+    fun importScriptFromContent(name: String, content: String, originalName: String): ScriptTask? {
+        return try {
+            // 清洗文件名：替换 / 和空格，避免内部存储路径异常
+            val safeName = originalName.ifBlank { "imported.sh" }
+                .replace("/", "_")
+                .replace(" ", "_")
+            ensureScriptsDir()
+            // 用 UUID 防止同名覆盖
+            val targetFileName = "${UUID.randomUUID().toString().substring(0, 8)}_$safeName"
+            val targetFile = File(scriptsDirFile(), targetFileName)
+            targetFile.writeText(content)
+
+            // 设置可执行权限（chmod 700），ShellExecutor 走 sh 调用时其实不强依赖，但保留以防直接执行
+            try {
+                targetFile.setExecutable(true, true)
+            } catch (_: Exception) { /* 忽略权限设置失败 */ }
+
+            val displayName = name.takeIf { it.isNotBlank() }
+                ?: safeName.removeSuffix(".sh")
+            val task = ScriptTask(
+                name = displayName,
+                scriptPath = targetFile.absolutePath,
+                originalName = safeName
+            )
+            cachedTasks.add(task)
+            saveToPrefs()
+            Log.i(TAG, "Imported script from content: ${task.name} -> ${task.scriptPath}")
+            task
+        } catch (e: Exception) {
+            Log.e(TAG, "importScriptFromContent failed", e)
+            null
+        }
+    }
+
+    /**
      * 删除脚本任务（同时删除内部存储的 .sh 文件）
      */
     fun deleteTask(id: String): Boolean {

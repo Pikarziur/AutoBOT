@@ -4,14 +4,11 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
-import android.util.Log
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.ImageView
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -41,10 +39,12 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -77,6 +77,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -774,6 +775,10 @@ private fun TasksTabsSection(
             }
         }
     }
+
+    // .sh 文件选择器 Dialog（Shizuku find/cat 路径）
+    // 挂在 TasksTabsSection 末尾，跨 Tab/模式切换均可见，由 vm.shFilePickerVisible 控制
+    ShFilePickerDialog(vm)
 }
 
 /**
@@ -967,12 +972,8 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
     val scriptTasks by vm.scriptTasks.collectAsStateWithLifecycle()
     val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
 
-    // SAF 文件选择器：OpenDocument 支持多 MIME，覆盖常见 .sh 文件类型
-    val shPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) vm.importScript(uri)
-    }
+    // 注：原 SAF 弹窗被国内 ROM "安全浏览" 拦截 .sh 文件，
+    //     改用 Shizuku `find` + `cat` 路径绕开系统过滤层（详见 vm.showShFilePicker）
 
     // 下拉框展开状态（remember 持有，无需提升到 VM）
     var expanded by remember { mutableStateOf(false) }
@@ -1095,17 +1096,9 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
             }
         }
 
-        // ---------- 添加按钮（SAF 选取 .sh 文件） ----------
+        // ---------- 添加按钮（Shizuku find 列出 .sh 文件，弹 Dialog 选）----------
         IconButton(
-            onClick = {
-                try {
-                    shPickerLauncher.launch(
-                        arrayOf("application/x-sh", "text/plain", "application/octet-stream")
-                    )
-                } catch (e: Exception) {
-                    Log.e("ShAdbModeContent", "OpenDocument launcher failed", e)
-                }
-            },
+            onClick = { vm.showShFilePicker() },
             modifier = Modifier.size(44.dp)  // 与下拉框同高，视觉对齐
         ) {
             Icon(
@@ -1133,6 +1126,119 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
             )
         }
     }
+}
+
+/**
+ * .sh 文件选择器 Dialog（Shizuku find/cat 路径，绕开 SAF）
+ *
+ * 调用方：[ShAdbModeContent] 的 + 按钮触发 `vm.showShFilePicker()` → 本 Dialog 出现
+ *
+ * 三种状态：
+ *   - 加载中（vm.isListingShFiles）：CircularProgressIndicator + "扫描 .sh 文件中..."
+ *   - 空列表：空状态文本"未找到 .sh 文件，请先 push 到 /sdcard/"
+ *   - 列表非空：LazyColumn 列出所有路径，点击触发 vm.importScriptFromPath(path)
+ *
+ * 列表项布局：上方文件名（高亮主色 + Medium 字重）+ 下方完整路径（灰色辅助）
+ *
+ * 注：Dialog 渲染在独立 window，挂在 [TasksTabsSection] 末尾，跨 Tab/模式切换均可见
+ */
+@Composable
+private fun ShFilePickerDialog(vm: MonitorViewModel) {
+    val visible by vm.shFilePickerVisible.collectAsStateWithLifecycle()
+    val isListing by vm.isListingShFiles.collectAsStateWithLifecycle()
+    val fileList by vm.shFileList.collectAsStateWithLifecycle()
+
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = { vm.hideShFilePicker() },
+        title = { Text("选择 .sh 文件") },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+            ) {
+                when {
+                    // 1. 加载中：find 命令在 IO 线程执行
+                    isListing -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "扫描 .sh 文件中...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    // 2. 空列表：find 命令没找到任何 .sh 文件
+                    fileList.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "未找到 .sh 文件\n请先 push 到 /sdcard/",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    // 3. 列表非空：渲染可点击路径列表
+                    else -> {
+                        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                            items(fileList) { path ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { vm.importScriptFromPath(path) }
+                                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        // 上：文件名（去掉路径），高亮主色
+                                        Text(
+                                            text = path.substringAfterLast('/'),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(Modifier.height(2.dp))
+                                        // 下：完整路径，灰色辅助
+                                        Text(
+                                            text = path,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.hideShFilePicker() }) {
+                Text("取消")
+            }
+        }
+    )
 }
 
 /**
