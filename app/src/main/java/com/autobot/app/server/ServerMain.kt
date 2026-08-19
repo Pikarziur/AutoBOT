@@ -440,9 +440,8 @@ object ServerMain {
                 inject.invoke(im, downEvent, 0)
                 inject.invoke(im, upEvent, 0)
                 Log.i(TAG, "✅ KEYCODE_BACK injected to displayId=$displayId")
-            } finally {
-                downEvent.recycle()
-                upEvent.recycle()
+                // 注意：KeyEvent.recycle() 在 API 35 已移除，KeyEvent 较轻量由 GC 回收
+                // （MotionEvent.recycle() 仍保留，因为 MotionEvent 包含 native 指针表）
             }
         } catch (e: Exception) {
             Log.w(TAG, "injectKeyBack failed: ${e.javaClass.simpleName}: ${e.message}")
