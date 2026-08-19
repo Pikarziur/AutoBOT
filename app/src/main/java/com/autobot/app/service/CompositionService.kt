@@ -73,7 +73,6 @@ class CompositionService(private val context: Context) {
 
         const val DEFAULT_WIDTH = 540
         const val DEFAULT_HEIGHT = 960
-        // 已废弃：VD 使用设备实际密度（context.resources.displayMetrics.densityDpi）
         const val DEFAULT_DPI = 240
         private const val VIRTUAL_DISPLAY_NAME = "AutoBOT-VirtualDisplay"
         private const val PING_INTERVAL_MS = 5_000L
@@ -216,13 +215,10 @@ class CompositionService(private val context: Context) {
             // step4: 发 CREATE_VD（注意！不再带 Surface Parcel，server 自己创建 ImageReader）
             Log.i(TAG, "step4 send MSG_CREATE_VD ...")
             val flags = DisplayManagerHelper.buildDisplayFlags()
-            // 使用设备实际密度，避免 Insets 比例失调导致 App 顶部多出一截
-            val deviceDensity = context.resources.displayMetrics.densityDpi
-            Log.i(TAG, "step4 VD density=$deviceDensity dpi (device physical density)")
             val request = VDRequest(
                 width = width,
                 height = height,
-                density = deviceDensity,
+                density = DEFAULT_DPI,
                 flags = flags,
                 name = VIRTUAL_DISPLAY_NAME,
                 jpegQuality = JPEG_QUALITY,

@@ -15,6 +15,7 @@ import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.service.CompositionService
+import com.autobot.app.util.ShellExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -520,8 +521,32 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             _executeMessage.value = r.second; return r
         }
 
-        // 6. 启动 App 到虚拟显示器
+        // 6. 消除虚拟显示器的状态栏/导航栏 insets
+        //    默认 VD 会报告系统栏 insets，导致 App 顶部预留黑条
+        //    通过 wm overscan 将四个方向的 overscan 设为 0，消除 insets
+        run {
+            val overscanCmd = "wm overscan $dId 0,0,0,0"
+            val or = ShellExecutor.execute(overscanCmd, useShizuku = true, timeout = 3000)
+            if (or.isSuccess) {
+                Log.i(TAG, "wm overscan set to 0,0,0,0 on display $dId")
+            } else {
+                Log.w(TAG, "wm overscan failed: ${or.stderr}")
+            }
+        }
+
+        // 7. 启动 App 到虚拟显示器
         val ok = AppManager.launchApp(context, packageName, dId)
+        if (ok) {
+            // 等待 App 启动后，再次消除 status bar（SystemUI 可能在 App 启动时重新绘制）
+            Thread.sleep(1500)
+            val statusbarCmd = "cmd statusbar collapse --display-id $dId"
+            val sr = ShellExecutor.execute(statusbarCmd, useShizuku = true, timeout = 3000)
+            if (sr.isSuccess) {
+                Log.i(TAG, "statusbar collapsed on display $dId")
+            } else {
+                Log.w(TAG, "statusbar collapse failed: ${sr.stderr}")
+            }
+        }
         return if (ok) {
             val r = true to "已启动到虚拟显示器 (${targetW}x${targetH})"
             _executeMessage.value = r.second
