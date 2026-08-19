@@ -583,6 +583,19 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
+     * 返回键 - 注入 KEYCODE_BACK 到虚拟显示器
+     *
+     * 发送 MSG_KEY_BACK 到 server 进程，server 端构造 KeyEvent(ACTION_DOWN + ACTION_UP) 一对
+     * 通过 IInputManager.injectInputEvent() 注入到 VD，让目标 App（如淘宝）返回上一层。
+     *
+     * 调用方需自行判断 isRunning：仅在 VD 运行时调用本方法，
+     * 未运行时应直接退出全屏（不要把 KEYCODE_BACK 注入到主屏幕）。
+     */
+    fun onBackPress() {
+        compositionService.injectBack()
+    }
+
+    /**
      * 刷新帧计数（供 UI 定时轮询）
      */
     fun refreshFrameCount() {

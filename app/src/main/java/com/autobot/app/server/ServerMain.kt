@@ -297,6 +297,10 @@ object ServerMain {
                         val ev = TouchEvent.fromByteArray(payload)
                         injectMotionEvent(android.view.MotionEvent.ACTION_UP, ev.x, ev.y)
                     }
+                    VDProtocol.MSG_KEY_BACK -> {
+                        // 注入 KEYCODE_BACK（DOWN + UP 一对），让 VD 中的 App 返回上一层
+                        injectKeyBack()
+                    }
                     VDProtocol.MSG_RELEASE_VD -> {
                         Log.i(TAG, "Received RELEASE_VD, releasing VD and exiting...")
                         releaseAll()
@@ -326,7 +330,8 @@ object ServerMain {
     // ===== IInputManager 反射缓存（避免每次触摸事件都做反射查找）=====
     private var inputManagerInstance: Any? = null
     private var injectMethod: java.lang.reflect.Method? = null
-    private var setDisplayIdMethod: java.lang.reflect.Method? = null
+    private var setDisplayIdMethod: java.lang.reflect.Method? = null       // MotionEvent.setDisplayId
+    private var setDisplayIdKeyEventMethod: java.lang.reflect.Method? = null  // KeyEvent.setDisplayId
     private var inputManagerInited = false
 
     /**
@@ -352,23 +357,7 @@ object ServerMain {
 
         try {
             // 首次调用：初始化反射缓存
-            if (!inputManagerInited) {
-                inputManagerInited = true
-                try {
-                    val imClass = Class.forName("android.hardware.input.InputManager")
-                    val getInstance = imClass.getDeclaredMethod("getInstance")
-                    getInstance.isAccessible = true
-                    inputManagerInstance = getInstance.invoke(null)
-                    injectMethod = imClass.getMethod("injectInputEvent",
-                        android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
-                    // MotionEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
-                    setDisplayIdMethod = android.view.MotionEvent::class.java
-                        .getMethod("setDisplayId", Int::class.javaPrimitiveType)
-                    Log.i(TAG, "✅ IInputManager reflection initialized")
-                } catch (e: Exception) {
-                    Log.e(TAG, "IInputManager reflection init failed", e)
-                }
-            }
+            ensureInputManagerReflection()
 
             val im = inputManagerInstance ?: return
             val inject = injectMethod ?: return
@@ -392,6 +381,99 @@ object ServerMain {
             }
         } catch (e: Exception) {
             Log.w(TAG, "injectMotionEvent failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /**
+     * 注入 KEYCODE_BACK 到虚拟显示器（一次完整按键 = ACTION_DOWN + ACTION_UP）
+     *
+     * 复用 [ensureInputManagerReflection] 初始化的反射缓存（inputManagerInstance / injectMethod），
+     * 但 setDisplayId 用 KeyEvent 专用版本（setDisplayIdKeyEventMethod）。
+     *
+     * 注意：
+     *   1. KeyEvent.obtain(downTime, eventTime, action, keyCode, repeat) 是 API 1+ 的稳定签名
+     *   2. KEYCODE_BACK = 4，固定不需要从 payload 取
+     *   3. DOWN 与 UP 之间间隔 50ms，模拟一次按键
+     *   4. shell uid 持有 INJECT_INPUT_EVENTS 权限，注入 KeyEvent 同 MotionEvent 一样被允许
+     */
+    private fun injectKeyBack() {
+        val displayId = cachedDisplayId
+        if (displayId < 0) {
+            Log.w(TAG, "injectKeyBack: displayId=$displayId, skip")
+            return
+        }
+
+        try {
+            // 首次调用：初始化反射缓存（与 injectMotionEvent 共用同一套反射）
+            ensureInputManagerReflection()
+
+            val im = inputManagerInstance ?: return
+            val inject = injectMethod ?: return
+            val setDisplayId = setDisplayIdKeyEventMethod
+
+            val now = android.os.SystemClock.uptimeMillis()
+            // DOWN + UP 一对构成完整按键事件
+            val downEvent = android.view.KeyEvent.obtain(
+                now, now,
+                android.view.KeyEvent.ACTION_DOWN,
+                android.view.KeyEvent.KEYCODE_BACK,
+                0  // repeat
+            )
+            val upEvent = android.view.KeyEvent.obtain(
+                now, now + 50,  // UP 比 DOWN 晚 50ms
+                android.view.KeyEvent.ACTION_UP,
+                android.view.KeyEvent.KEYCODE_BACK,
+                0
+            )
+            try {
+                // 设置 displayId → 注入到虚拟显示器而非主屏幕
+                setDisplayId?.invoke(downEvent, displayId)
+                setDisplayId?.invoke(upEvent, displayId)
+                // 设置键盘源
+                downEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
+                upEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
+                // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
+                inject.invoke(im, downEvent, 0)
+                inject.invoke(im, upEvent, 0)
+                Log.i(TAG, "✅ KEYCODE_BACK injected to displayId=$displayId")
+            } finally {
+                downEvent.recycle()
+                upEvent.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "injectKeyBack failed: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /**
+     * 首次调用时初始化 InputManager 反射缓存（幂等：inputManagerInited 标记位防重复）
+     *
+     * 缓存项：
+     *   - inputManagerInstance   : InputManager.getInstance() 单例
+     *   - injectMethod            : InputManager.injectInputEvent(InputEvent, int)
+     *   - setDisplayIdMethod      : MotionEvent.setDisplayId(int) — 触摸事件用
+     *   - setDisplayIdKeyEventMethod : KeyEvent.setDisplayId(int) — 返回键用
+     */
+    private fun ensureInputManagerReflection() {
+        if (inputManagerInited) return
+        inputManagerInited = true
+        try {
+            val imClass = Class.forName("android.hardware.input.InputManager")
+            val getInstance = imClass.getDeclaredMethod("getInstance")
+            getInstance.isAccessible = true
+            inputManagerInstance = getInstance.invoke(null)
+            injectMethod = imClass.getMethod("injectInputEvent",
+                android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
+            // MotionEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
+            setDisplayIdMethod = android.view.MotionEvent::class.java
+                .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+            // KeyEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
+            // 与 MotionEvent 分开反射：避免 MotionEvent 类找不到时连带失败
+            setDisplayIdKeyEventMethod = android.view.KeyEvent::class.java
+                .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+            Log.i(TAG, "✅ IInputManager reflection initialized")
+        } catch (e: Exception) {
+            Log.e(TAG, "IInputManager reflection init failed", e)
         }
     }
 }

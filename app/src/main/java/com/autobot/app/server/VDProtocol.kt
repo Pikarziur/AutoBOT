@@ -26,6 +26,8 @@ import java.io.OutputStream
  *   6. MSG_RELEASE_VD_RESP   (Server → App) 释放完成
  *   7. MSG_FRAME             (Server → App) JPEG 帧（VD 画面内容，高频消息）
  *   8. MSG_FRAME_ACK          (App → Server) 帧已接收（可选，server 做 flow control 节流）
+ *   9. MSG_TOUCH_DOWN/_MOVE/_UP (App → Server) 触摸事件，server 用 IInputManager.injectInputEvent 注入 MotionEvent
+ *  10. MSG_KEY_BACK           (App → Server) 返回键，server 用 IInputManager.injectInputEvent 注入 KeyEvent(KEYCODE_BACK)
  *
  * 重要架构变更（修复 Parcel.marshall 失败）：
  *   旧方案 ❌：App 创建 AImageReader + Surface.writeToParcel + marshall() → socket → server
@@ -50,6 +52,7 @@ object VDProtocol {
     const val MSG_TOUCH_DOWN = 9
     const val MSG_TOUCH_MOVE = 10
     const val MSG_TOUCH_UP = 11
+    const val MSG_KEY_BACK = 12   // 注入 KEYCODE_BACK 到虚拟显示器（无需 payload，keyCode 固定）
 
     /** 空 payload（PING/PONG/RELEASE_VD/FRAMES_ACK 等占位） */
     val EMPTY_PAYLOAD = ByteArray(0)

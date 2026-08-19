@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.ImageView
 import androidx.activity.compose.BackHandler
@@ -357,6 +358,7 @@ private fun VirtualDisplayPreview(
  * - 锁定 Activity 方向跟随 VD 内容方向
  * - pointerInput 监听触摸事件并映射到虚拟显示器坐标
  * - 右上角关闭按钮
+ * - 边缘滑动/物理返回键：VD 运行时注入 KEYCODE_BACK 让目标 App 返回上一层；未运行时退出全屏
  */
 @Composable
 private fun FullscreenMonitor(
@@ -370,8 +372,11 @@ private fun FullscreenMonitor(
     val view = LocalView.current
     val (bufferWidth, bufferHeight) = displaySize
 
+    // VD 运行时：边缘滑动/物理返回键 → 注入 KEYCODE_BACK 到 VD，让目标 App 返回上一层
+    // VD 未运行时：退出全屏
+    val isRunning by vm.isRunning.collectAsStateWithLifecycle()
     BackHandler(enabled = true) {
-        onExit()
+        if (isRunning) vm.onBackPress() else onExit()
     }
 
     DisposableEffect(isLandscape) {
@@ -643,6 +648,10 @@ private fun TaobaoLauncherRow(
 
 /**
  * Drawable 图标 -> AndroidView(ImageView)
+ *
+ * AdaptiveIconDrawable（如淘宝 icon）默认会铺满整个方形 ImageView，导致 background 层
+ * 填充到四角（看起来像"灰色尖角"）。用 clipToOutline + 圆形 ViewOutlineProvider 把方形
+ * 四角剪掉，只显示圆形内的内容，与 M3 ListItem leadingContent 视觉规范一致。
  */
 @Composable
 private fun AppIconDrawable(
@@ -655,6 +664,13 @@ private fun AppIconDrawable(
             ImageView(ctx).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                // 圆形剪裁：把方形 ImageView 四角剪掉，避免 AdaptiveIcon 的 background 层显示在尖角
+                clipToOutline = true
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: android.graphics.Outline) {
+                        outline.setOval(0, 0, view.width, view.height)
+                    }
+                }
             }
         },
         update = { view ->

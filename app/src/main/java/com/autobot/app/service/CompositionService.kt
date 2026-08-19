@@ -337,6 +337,21 @@ class CompositionService(private val context: Context) {
         }
     }
 
+    /**
+     * 发送 MSG_KEY_BACK 到 server 进程，server 注入 KeyEvent(KEYCODE_BACK) 到虚拟显示器
+     * 用于让 VD 中的目标 App（如淘宝）返回上一层。
+     * 无 payload：keyCode 固定为 KEYCODE_BACK，由 server 端构造完整的 DOWN+UP 事件。
+     */
+    fun injectBack() {
+        val proc = serverProcess ?: return
+        try {
+            VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_KEY_BACK,
+                VDProtocol.EMPTY_PAYLOAD)
+        } catch (e: Exception) {
+            Log.w(TAG, "injectBack: write failed: ${e.message}")
+        }
+    }
+
     fun getFrameBufferBitmap(): Bitmap? = capturer?.getFrameBufferBitmap()
     fun getFrameCount(): Long = capturer?.getFrameCount() ?: 0L
 
