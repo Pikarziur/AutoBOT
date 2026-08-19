@@ -49,7 +49,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -760,9 +761,10 @@ private fun TasksTabsSection(
 /**
  * 任务标签页
  *
- * 顶部：模式选择（adb shell / 截图识别），单选交互
- *   - 选中模式：primary 蓝底白字
- *   - 未选模式：surfaceVariant 浅灰底灰字（视觉弱化但可点击切换）
+ * 顶部：模式选择（adb shell / 截图识别），竖向 RadioButton + 文本，单选交互
+ *   - 选中：RadioButton 实心 primary + 文字 onSurface 主色
+ *   - 未选：RadioButton 描边 + 文字 onSurfaceVariant 灰
+ *   - 整行可点击（点 Row 任意位置即触发 onClick，等同于点 RadioButton）
  * 内容区：根据选中模式渲染对应 UI（SH-ADB / 截图识别占位）
  */
 @Composable
@@ -770,24 +772,22 @@ private fun TasksTabContent(vm: MonitorViewModel) {
     val selectedMode by vm.selectedMode.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 模式选择 ----------
-        Row(
+        // ---------- 模式选择（竖向） ----------
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 4.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            ModeChip(
+            ModeRadioButtonRow(
                 label = "adb shell",
                 selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
-                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) },
-                modifier = Modifier.weight(1f)
+                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) }
             )
-            ModeChip(
+            ModeRadioButtonRow(
                 label = "截图识别",
                 selected = selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION,
-                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) },
-                modifier = Modifier.weight(1f)
+                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) }
             )
         }
 
@@ -820,46 +820,48 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 }
 
 /**
- * 模式选择 Chip
+ * 模式单选项（RadioButton + 文本，竖向排列用）
  *
- * - selected=true：primary 蓝底，onPrimary 白字
- * - selected=false：surfaceVariant 浅灰底，onSurfaceVariant 灰字
- * 始终可点击，单选交互（点未选中的 Chip 即切换到该模式）
+ * - 整行可点击：点 Row 任意位置均触发 onClick（等同点 RadioButton 本身）
+ * - selected=true ：RadioButton 选中 + 文字主色 onSurface
+ * - selected=false：RadioButton 未选 + 文字灰 onSurfaceVariant
+ * 始终可点击，单选交互（点未选项即切换到该模式）
  */
 @Composable
-private fun ModeChip(
+private fun ModeRadioButtonRow(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Surface(
-        onClick = onClick,
-        modifier = modifier.height(40.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = containerColor,
-        contentColor = contentColor
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(
+                selectedColor = MaterialTheme.colorScheme.primary,
+                unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                disabledSelectedColor = MaterialTheme.colorScheme.primary,
+                disabledUnselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        )
     }
 }
 
@@ -1060,10 +1062,14 @@ private fun ShTaskRow(
 /**
  * 日志标签页
  *
- * 实时显示 TaskManager 输出的所有任务日志（vm.taskLogs）
+ * 实时显示脚本执行日志（vm.scriptLogs，仅 taskListener 写入）
  * 日志行格式（由 MonitorViewModel 拼装，已包含时间戳/任务名/状态/详情）：
  *   [HH:mm:ss] [类型标记] 内容
  *   类型标记：⟶ 启动 / ✓ 完成 / ✗ 出错 / ⏹ 停止 / [id] 输出
+ *
+ * 仅脚本执行相关日志：
+ *   - 启动/输出/完成/停止/出错 等任务生命周期事件
+ *   - 不包含 Shizuku 诊断 / VD 启动 等非脚本日志（这些走 [_taskLogs] 流，UI 不展示）
  *
  * 特性：
  *   - LazyColumn 逐行渲染，新日志到达后自动滚动到底
@@ -1073,7 +1079,7 @@ private fun ShTaskRow(
  */
 @Composable
 private fun LogsTabContent(vm: MonitorViewModel) {
-    val logs by vm.taskLogs.collectAsStateWithLifecycle()
+    val logs by vm.scriptLogs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     // 日志列表新增 → 自动滚到底部（最新）

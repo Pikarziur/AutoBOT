@@ -129,42 +129,54 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     val executeMessage: StateFlow<String?> = _executeMessage.asStateFlow()
 
     /**
-     * 任务日志流（UI 实时显示用）
-     * - 每行格式：[HH:mm:ss] [任务名/ID] [OUT]/[ERR]/[START]/[DONE] ... 内容
-     * - 用 List<String> 以便 Compose LazyColumn 逐条渲染并自动滚动到底
-     * - 保留最多 500 行，避免内存无限增长
+     * 诊断日志流（Shizuku 状态 / VD 启动 / 错误信息等，UI 暂不展示）
+     * - 每行格式：[HH:mm:ss] <symbol> <message>
+     * - 用 List<String> 保留最近 LOG_MAX_LINES 行，避免内存无限增长
+     *
+     * 注：此流不再由 UI 直接消费；UI 日志 Tab 只显示 [scriptLogs]（脚本执行日志）。
+     *      保留 appendLog() 调用点是为了在 Logcat 之外保留一份运行时诊断记录，便于排查。
      */
     private val _taskLogs = MutableStateFlow<List<String>>(emptyList())
     val taskLogs: StateFlow<List<String>> = _taskLogs.asStateFlow()
+
+    /**
+     * 脚本执行日志流（UI 日志 Tab 专用，仅由 taskListener 写入）
+     * - 仅包含脚本任务的生命周期与 stdout/stderr 输出
+     * - 不混入 Shizuku 诊断 / VD 启动等非脚本日志
+     * - 保留最多 LOG_MAX_LINES 行，避免内存无限增长
+     */
+    private val _scriptLogs = MutableStateFlow<List<String>>(emptyList())
+    val scriptLogs: StateFlow<List<String>> = _scriptLogs.asStateFlow()
 
     private val logLock = Any()
     private val logSdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     /**
-     * TaskManager 事件监听器：将任务生命周期和输出转为 UI 日志
+     * TaskManager 事件监听器：将脚本任务生命周期和输出转为 UI 日志
+     * 注：所有事件均写入 [_scriptLogs]（脚本执行专用流），不污染 [_taskLogs]
      */
     private val taskListener = object : TaskManager.TaskListener {
         override fun onTaskStarted(task: com.autobot.app.model.TaskInfo) {
-            appendLog("[${stamp()}] ⟶ 启动任务『${task.name}』 (id=${task.id.substring(0, 4)} type=${task.type})")
+            appendScriptLog("[${stamp()}] ⟶ 启动任务『${task.name}』 (id=${task.id.substring(0, 4)} type=${task.type})")
         }
         override fun onTaskOutput(task: com.autobot.app.model.TaskInfo, line: String) {
-            appendLog("[${stamp()}] [${task.id.substring(0, 4)}] $line")
+            appendScriptLog("[${stamp()}] [${task.id.substring(0, 4)}] $line")
         }
         override fun onTaskCompleted(task: com.autobot.app.model.TaskInfo) {
             val duration = task.getDurationText()
-            appendLog("[${stamp()}] ✓ 任务『${task.name}』完成 (exit=${task.exitCode}, duration=$duration)")
+            appendScriptLog("[${stamp()}] ✓ 任务『${task.name}』完成 (exit=${task.exitCode}, duration=$duration)")
         }
         override fun onTaskStopped(task: com.autobot.app.model.TaskInfo) {
-            appendLog("[${stamp()}] ⏹ 任务『${task.name}』被停止 (id=${task.id.substring(0, 4)})")
+            appendScriptLog("[${stamp()}] ⏹ 任务『${task.name}』被停止 (id=${task.id.substring(0, 4)})")
         }
         override fun onTaskError(task: com.autobot.app.model.TaskInfo, error: String) {
-            appendLog("[${stamp()}] ✗ 任务『${task.name}』出错: $error")
+            appendScriptLog("[${stamp()}] ✗ 任务『${task.name}』出错: $error")
         }
     }
 
     private fun stamp(): String = logSdf.format(Date())
 
-    /** 追加一行日志（最多保留 500 行），线程安全 */
+    /** 追加一行诊断日志（Shizuku/VD 等非脚本输出，UI 不展示），线程安全 */
     private fun appendLog(line: String) {
         synchronized(logLock) {
             val list = _taskLogs.value.toMutableList()
@@ -173,6 +185,18 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 list.removeAt(0)
             }
             _taskLogs.value = list
+        }
+    }
+
+    /** 追加一行脚本执行日志到 [_scriptLogs]（UI 日志 Tab 显示），最多保留 500 行，线程安全 */
+    private fun appendScriptLog(line: String) {
+        synchronized(logLock) {
+            val list = _scriptLogs.value.toMutableList()
+            list.add(line)
+            while (list.size > LOG_MAX_LINES) {
+                list.removeAt(0)
+            }
+            _scriptLogs.value = list
         }
     }
 
@@ -185,19 +209,21 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
         // 加载已持久化的 SH 脚本任务列表
         refreshScriptTasks()
-        // 注册 TaskManager 监听器：实时将任务日志推给 UI
+        // 注册 TaskManager 监听器：实时将脚本执行日志推给 UI
         TaskManager.addListener(taskListener)
-        // 欢迎日志（避免空列表）
-        appendLog("[${stamp()}] 日志区就绪：SH-ADB 任务执行后 stdout/stderr 将实时显示在此")
+        // 欢迎日志写入脚本日志流（UI 日志 Tab 初始展示用）
+        appendScriptLog("[${stamp()}] 日志区就绪：SH-ADB 任务执行后 stdout/stderr 将实时显示在此")
     }
 
     /**
-     * 清空 UI 任务日志（仅清空显示，不影响 TaskManager 的历史）
+     * 清空 UI 脚本日志（仅清空 [_scriptLogs] 显示，不影响 TaskManager 的历史）
+     * 同时清空诊断日志 [_taskLogs]，避免运行久后内存累积
      */
     fun clearLogs() {
         synchronized(logLock) {
             _taskLogs.value = emptyList()
-            appendLog("[${stamp()}] 日志已清空")
+            _scriptLogs.value = emptyList()
+            appendScriptLog("[${stamp()}] 日志已清空")
         }
     }
 
