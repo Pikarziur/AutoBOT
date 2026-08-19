@@ -413,17 +413,21 @@ object ServerMain {
 
             val now = android.os.SystemClock.uptimeMillis()
             // DOWN + UP 一对构成完整按键事件
+            // 使用 6 参数 overload: obtain(downTime, eventTime, action, keyCode, repeat, metaState)
+            // 自 API 1 稳定（5 参数版本不存在）
             val downEvent = android.view.KeyEvent.obtain(
                 now, now,
                 android.view.KeyEvent.ACTION_DOWN,
                 android.view.KeyEvent.KEYCODE_BACK,
-                0  // repeat
+                0,  // repeat
+                0   // metaState
             )
             val upEvent = android.view.KeyEvent.obtain(
                 now, now + 50,  // UP 比 DOWN 晚 50ms
                 android.view.KeyEvent.ACTION_UP,
                 android.view.KeyEvent.KEYCODE_BACK,
-                0
+                0,  // repeat
+                0   // metaState
             )
             try {
                 // 设置 displayId → 注入到虚拟显示器而非主屏幕
