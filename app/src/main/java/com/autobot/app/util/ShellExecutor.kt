@@ -446,13 +446,31 @@ object ShellExecutor {
                 }
             }
 
+            // scalingEnabled = wrapper 开头是否已经成功写入 _autobot_scalex / _autobot_scaley
+            // （前提：AUTOBOT_BASE_W × AUTOBOT_BASE_H 以及 AUTOBOT_VD_WIDTH × AUTOBOT_VD_HEIGHT 4 个变量都合法）
+            // ★关键修复：
+            //   之前把每个坐标都替换成 $(command -v func && func N || printf '%s' N)，里面包含 >/dev/null 2>&1、
+            //   &&、|| 这种复杂 sh 逻辑，Android 默认 sh（toybox/mksh）解析命令替换时会出现
+            //   参数错位 / 输出含重定向残留，导致 swipe 的展开结果不是 4 个纯整数，
+            //   InputShellCommand 就会抛 "Invalid arguments for command: swipe"。
+            //   现在 wrapper 生成端已经能 100% 确定"有没有缩放函数"——有就直接替换成极简形式
+            //   $(_autobot_scalex N) / $(_autobot_scaley N)（没有任何 fallback 分支、重定向、逻辑符）；
+            //   没有就干脆整行不改，杜绝一切 sh 语法歧义。
+            val scalingEnabled = vdEnvForScaling.let {
+                val baseW = it["AUTOBOT_BASE_W"]?.toIntOrNull() ?: 0
+                val baseH = it["AUTOBOT_BASE_H"]?.toIntOrNull() ?: 0
+                val vdW   = it["AUTOBOT_VD_WIDTH"]?.toIntOrNull() ?: 0
+                val vdH   = it["AUTOBOT_VD_HEIGHT"]?.toIntOrNull() ?: 0
+                baseW > 0 && baseH > 0 && vdW > 0 && vdH > 0
+            }
+
             // 逐行处理：
             //   1) appendDisplayToCommandLine 补 --display 到正确位置（解决 Unknown command: --display）
             //   2) scaleInputCoordsInLine    把 input tap/swipe/drag/press/draganddrop 的坐标参数
-            //                                替换成 $(_autobot_scalex N) / $(_autobot_scaley N)
+            //                                替换成 $(_autobot_scalex N) / $(_autobot_scaley N)（scaling=true 时）
             restLines.forEach { rawLine ->
                 val line1 = appendDisplayToCommandLine(rawLine, safeVdId)
-                val line2 = scaleInputCoordsInLine(line1)
+                val line2 = scaleInputCoordsInLine(line1, scalingEnabled)
                 sb.append(line2).append('\n')
             }
             sb.toString()
@@ -656,9 +674,12 @@ object ShellExecutor {
 
     /**
      * 将一行命令中 `input <SUBCOMMAND> [--display DID] <坐标参数...>` 的坐标参数，
-     * 替换成 sh 函数调用形式，保证 wrapper 执行时会：
+     * 替换成 sh 函数调用形式，当 [scalingEnabled]=true 时 wrapper 执行时会：
      *   1. 用千分比 sx/sy 把"手机基准"的整数坐标等比缩放到 VD
      *   2. clamp 到 [0, VD_W-1] / [0, VD_H-1]（超出 VD 的点自动贴边，不会"点了没反应"）
+     *
+     * ★[scalingEnabled]=false 时：直接返回原 line，一行都不改，避免 sh 语法歧义。
+     *   (scalingEnabled=是否已经在 wrapper 顶部写入了 _autobot_scalex/_autobot_scaley 函数)
      *
      * 参数按位置识别（不会动非坐标参数，比如 swipe 的 duration 不会被缩放）：
      *   input tap X Y                                → X=scaleX, Y=scaleY
@@ -669,11 +690,11 @@ object ShellExecutor {
      *
      * 如果 line 不是上述 input 子命令，原样返回。
      */
-    internal fun scaleInputCoordsInLine(line: String): String {
+    internal fun scaleInputCoordsInLine(line: String, scalingEnabled: Boolean): String {
+        if (!scalingEnabled) return line       // ★关键：没有缩放函数 → 绝不改一行，避免 sh 语法歧义
         if (line.isBlank()) return line
         val trimmed = line.trimStart()
         if (!trimmed.startsWith("input ") && !trimmed.startsWith("input\t")) return line
-        // 纯注释/空直接跳过（前面 if (isBlank) 已挡）
 
         val leading = line.substring(0, line.length - trimmed.length)
         // 简单 tokenize：按空白切开（不支持带空格字符串；input 命令除 text 外都没有空格）
@@ -682,25 +703,12 @@ object ShellExecutor {
 
         val subcommand = tokens[1]
         if (!INPUT_SCALE_SUBCOMMANDS.contains(subcommand)) return line
-        // 没有 BASE→VD 的缩放环境变量就不做替换
-        //   我们用"wrapper 里 _autobot_sx 这些变量有没有被定义"来判断是否已启用缩放，
-        //   但这里在生成 wrapper 时没法事后知道，所以用更稳妥方式：
-        //   只有当 env 里有 AUTOBOT_BASE_W/H 且 VD_W/H 时才替换。
-        //   但这个函数没接收 env，所以改成**总是输出替换形式**：
-        //   如果 wrapper 没定义 _autobot_scalex，那 $(_autobot_scalex 1200) 会执行失败返回空？
-        //   —— 不会，因为 _autobot_scalex 没定义时 sh 会报错 command not found，这会把脚本搞挂。
-        // 安全做法：把函数改成**可选参数**：把替换形式写成一个"有定义就调用、否则原样输出"的表达式。
-        // sh 中做法：command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex N || echo N
-        // 所以 X 参数替换后： $(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex X || printf '%s' X)
-        // 同理 Y：$(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley Y || printf '%s' Y)
-        // 这样即便 wrapper 没有注入缩放函数（缺 BASE/VD 变量），脚本行为也完全回退 = 原样执行，
-        // 不会报错 command not found，也不会乱。
 
+        // ★极简：scalingEnabled=true 意味着 wrapper 顶部已写入函数，直接调用 $(_autobot_scalex N)。
+        //   没有 command -v、没有 >/dev/null、没有 && || —— 杜绝 Android sh 下命令替换展开失败。
         val dollar = '$'
-        fun sx(n: String) =
-            "${dollar}(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex $n || printf '%s' $n)"
-        fun sy(n: String) =
-            "${dollar}(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley $n || printf '%s' $n)"
+        fun sx(n: String) = "${dollar}(_autobot_scalex $n)"
+        fun sy(n: String) = "${dollar}(_autobot_scaley $n)"
 
         // 先把 tokens 里的 "--display <DID>" 抽出来，按 input SUBCOMMAND --display DID <rest...> 顺序重排
         val rest = tokens.drop(2).toMutableList()
@@ -726,7 +734,7 @@ object ShellExecutor {
                     else when (idx) {
                         0 -> sx(s)
                         1 -> sy(s)
-                        else -> s  // 更多参数按 Android 定义通常不存在，安全起见不动
+                        else -> s
                     }
                 }
             }
