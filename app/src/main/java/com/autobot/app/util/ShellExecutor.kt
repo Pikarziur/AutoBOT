@@ -5,6 +5,7 @@ import com.autobot.app.manager.ShizukuManager
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.UUID
 
 /**
  * Shell 执行工具类
@@ -33,18 +34,20 @@ object ShellExecutor {
      * 执行 shell 命令（一次性模式：命令结束才返回结果）
      * @param command 要执行的命令
      * @param useShizuku 是否使用 Shizuku 权限执行（默认 true）
+     * @param env 附加环境变量（key=value 形式传入进程环境），可覆盖/追加系统原有 env
      * @param timeout 超时时间（毫秒），默认 30 秒
      * @return 执行结果
      */
     fun execute(
         command: String,
         useShizuku: Boolean = true,
+        env: Map<String, String> = emptyMap(),
         timeout: Long = 30000
     ): ShellResult {
         val stdoutBuilder = StringBuilder()
         val stderrBuilder = StringBuilder()
         val exitCode = executeStreamingInternal(
-            command, useShizuku, timeout,
+            command, useShizuku, env, timeout,
             onStdoutLine = { line ->
                 stdoutBuilder.append(line).append("\n")
             },
@@ -67,6 +70,8 @@ object ShellExecutor {
      *
      * @param command   要执行的命令
      * @param useShizuku 是否使用 Shizuku 权限执行（默认 true）
+     * @param env 附加环境变量（注入到 sh -c 之前，.sh 脚本中可通过 $KEY 读取）
+     *            例如：AUTOBOT_VD_DISPLAY_ID=11 让 am/tap 等命令走虚拟显示器
      * @param timeout   超时时间（毫秒），默认 10 分钟（脚本任务通常比较长）
      * @param onStdoutLine stdout 每一行的回调（参数为单行，不含换行符）；IO 线程调用
      * @param onStderrLine stderr 每一行的回调（参数为单行，不含换行符）；IO 线程调用
@@ -75,12 +80,13 @@ object ShellExecutor {
     fun executeStreaming(
         command: String,
         useShizuku: Boolean = true,
+        env: Map<String, String> = emptyMap(),
         timeout: Long = 600_000L,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return try {
-            executeStreamingInternal(command, useShizuku, timeout, onStdoutLine, onStderrLine)
+            executeStreamingInternal(command, useShizuku, env, timeout, onStdoutLine, onStderrLine)
         } catch (e: Exception) {
             Log.e(TAG, "Streaming execute error: $command", e)
             -1
@@ -93,45 +99,63 @@ object ShellExecutor {
     private fun executeStreamingInternal(
         command: String,
         useShizuku: Boolean,
+        env: Map<String, String>,
         timeout: Long,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return if (useShizuku && ShizukuManager.isShizukuGranted()) {
-            executeWithShizukuStreaming(command, timeout, onStdoutLine, onStderrLine)
+            executeWithShizukuStreaming(command, env, timeout, onStdoutLine, onStderrLine)
         } else {
-            executeWithNormalStreaming(command, timeout, onStdoutLine, onStderrLine)
+            executeWithNormalStreaming(command, env, timeout, onStdoutLine, onStderrLine)
         }
     }
 
     /**
      * 执行本地 sh 脚本文件
+     *
+     * ★Shizuku 模式访问权限问题修复★
+     *   Shizuku 走 shell uid(2000)，应用 filesDir 是 app uid 私有目录(0700)，
+     *   shell uid 无法直接读取 filesDir 下的 .sh → Permission denied。
+     *   解决方案：当 useShizuku=true 时，先将脚本内容复制到 shell uid 可读写的
+     *   /data/local/tmp/autobot_scripts/<random>_xxx.sh，再执行临时文件。
+     *   普通模式（app uid）直接执行原路径。
+     *
      * @param scriptPath sh 脚本文件路径
      * @param useShizuku 是否使用 Shizuku 权限执行
-     * @param args 传递给脚本的参数
+     * @param env 附加环境变量（key=value），.sh 脚本中可 $KEY 读取
+     * @param timeout 超时（毫秒），默认 10 分钟
+     * @param args 传递给脚本的位置参数（$1 $2 ...）
      * @return 执行结果
      */
     fun executeScript(
         scriptPath: String,
         useShizuku: Boolean = true,
+        env: Map<String, String> = emptyMap(),
+        timeout: Long = 60_000L,
         vararg args: String
     ): ShellResult {
-        val scriptFile = File(scriptPath)
-        if (!scriptFile.exists()) {
-            return ShellResult(-1, "", "Script file not found: $scriptPath")
+        val effectivePath = maybeCopyScriptToTmpForShizuku(scriptPath, useShizuku)
+        if (effectivePath == null) {
+            return ShellResult(-1, "", "Script file not found or cannot be staged: $scriptPath")
         }
 
         // 组装命令：sh scriptPath args...
         val command = buildString {
             append("sh ")
-            append(scriptPath)
+            append(effectivePath)
             if (args.isNotEmpty()) {
                 append(" ")
                 append(args.joinToString(" "))
             }
         }
 
-        return execute(command, useShizuku)
+        try {
+            return execute(command, useShizuku, env, timeout)
+        } finally {
+            // 若使用了临时文件，执行结束后清理
+            maybeCleanupTmpScript(effectivePath, scriptPath, useShizuku)
+        }
     }
 
     /**
@@ -139,6 +163,7 @@ object ShellExecutor {
      *
      * @param scriptPath sh 脚本文件路径
      * @param useShizuku 是否使用 Shizuku 权限执行
+     * @param env 附加环境变量（AUTOBOT_VD_DISPLAY_ID 等）
      * @param args 传递给脚本的参数
      * @param timeout 超时（毫秒），默认 10 分钟
      * @param onStdoutLine stdout 每一行的回调；IO 线程调用
@@ -148,31 +173,141 @@ object ShellExecutor {
     fun executeScriptStreaming(
         scriptPath: String,
         useShizuku: Boolean = true,
+        env: Map<String, String> = emptyMap(),
         vararg args: String,
         timeout: Long = 600_000L,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
-        val scriptFile = File(scriptPath)
-        if (!scriptFile.exists()) {
-            onStderrLine("[ERROR] Script file not found: $scriptPath")
+        val effectivePath = maybeCopyScriptToTmpForShizuku(scriptPath, useShizuku)
+        if (effectivePath == null) {
+            onStderrLine("[ERROR] Script file not found or cannot be staged: $scriptPath")
             return -1
         }
 
         val command = buildString {
             append("sh ")
-            append(scriptPath)
+            append(effectivePath)
             if (args.isNotEmpty()) {
                 append(" ")
                 append(args.joinToString(" "))
             }
         }
 
-        return executeStreaming(
-            command, useShizuku, timeout,
-            onStdoutLine = onStdoutLine,
-            onStderrLine = onStderrLine
-        )
+        val exit = try {
+            executeStreaming(
+                command, useShizuku, env, timeout,
+                onStdoutLine = onStdoutLine,
+                onStderrLine = onStderrLine
+            )
+        } finally {
+            maybeCleanupTmpScript(effectivePath, scriptPath, useShizuku)
+        }
+        return exit
+    }
+
+    /**
+     * /data/local/tmp/autobot_scripts —— Shizuku shell uid 可读写的临时脚本目录
+     *   - 使用 /data/local/tmp 而非 /sdcard：避免安全浏览过滤 + 不经过 scoped storage
+     *   - 单次脚本复制：保证脚本执行时 shell uid 能读到内容
+     */
+    private const val TMP_SCRIPT_DIR = "/data/local/tmp/autobot_scripts"
+
+    /**
+     * 当 useShizuku=true 时，将 scriptPath（app filesDir）的脚本内容复制到 TMP_SCRIPT_DIR
+     * 下的临时文件，返回临时文件绝对路径；useShizuku=false 或复制失败返回原路径/报错返回 null。
+     *
+     * 注：不通过 Shizuku `cat` 来写（路径间可直接 java.io.File 读写，因为当前 app 能
+     * 读 filesDir、adb shell 经 java.io 写 /data/local/tmp 不一定有写入权限——所以这里
+     * 用 app 自身写，app 对 /data/local/tmp 一般是可写的（tmp 粘滞位放开 app 写入）。
+     * 若 app 也无法写入，退化使用 Shizuku `tee` 落盘到 TMP_SCRIPT_DIR。
+     */
+    private fun maybeCopyScriptToTmpForShizuku(scriptPath: String, useShizuku: Boolean): String? {
+        if (!useShizuku) {
+            // 普通模式：app uid 自己执行自己 filesDir，不需要重定位
+            return if (File(scriptPath).exists()) scriptPath else null
+        }
+        val src = File(scriptPath)
+        if (!src.exists()) return null
+
+        val tmpDir = File(TMP_SCRIPT_DIR)
+        val safeName = "${UUID.randomUUID().toString().substring(0, 8)}_${src.name}"
+        val tmpFile = File(tmpDir, safeName)
+
+        // 尝试路径1：app 直接写入 /data/local/tmp（大部分 ROM 允许 app 创建自己的文件）
+        val writeAppOk = try {
+            if (!tmpDir.exists()) tmpDir.mkdirs()
+            src.copyTo(tmpFile, overwrite = true)
+            tmpFile.setExecutable(true, false)  // 所有用户可执行，保证 shell uid 能跑
+            tmpFile.canRead()
+        } catch (e: Exception) {
+            Log.w(TAG, "App cannot stage script to /data/local/tmp, fallback Shizuku tee", e)
+            false
+        }
+        if (writeAppOk) {
+            return tmpFile.absolutePath
+        }
+
+        // 尝试路径2：用 Shizuku 权限创建目录 + 写内容（mkdir -p + tee）
+        return try {
+            val cmd = buildString {
+                append("mkdir -p '$TMP_SCRIPT_DIR' && ")
+                // 把脚本内容通过 base64 传避免特殊字符问题
+                // (简单方式：cat src via shizuku is not readable, so use java.io read + Shizuku's sh -c echo)
+                val contentBase64 = android.util.Base64.encodeToString(src.readBytes(), android.util.Base64.NO_WRAP)
+                append("echo -n '$contentBase64' | base64 -d > '${tmpFile.absolutePath}' && ")
+                append("chmod 0755 '${tmpFile.absolutePath}'")
+            }
+            val res = rawOneShotShizuku(cmd)
+            if (res == 0 && tmpFile.exists() && tmpFile.canRead()) {
+                tmpFile.absolutePath
+            } else {
+                Log.e(TAG, "Shizuku tee stage failed exit=$res. tmpPath=${tmpFile.absolutePath}")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Shizuku tee stage exception", e)
+            null
+        }
+    }
+
+    /** 清理 Shizuku 模式下使用的临时脚本（不清理普通模式原路径） */
+    private fun maybeCleanupTmpScript(effectivePath: String, originalPath: String, useShizuku: Boolean) {
+        if (!useShizuku) return
+        if (effectivePath == originalPath) return // 没使用临时文件
+        try {
+            val f = File(effectivePath)
+            if (f.exists()) f.delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "Cleanup tmp script failed: $effectivePath", e)
+        }
+    }
+
+    /** 一次性 Shizuku 执行（不经过主线程，内部使用，仅用于落盘辅助） */
+    private fun rawOneShotShizuku(command: String): Int {
+        return try {
+            val cmdArray = arrayOf("sh", "-c", command)
+            val shizukuClass = Class.forName("rikka.shizuku.Shizuku")
+            val newProcessMethod = shizukuClass.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            newProcessMethod.isAccessible = true
+            val process = newProcessMethod.invoke(null, cmdArray, null, null) as Process
+            process.inputStream.bufferedReader().forEachLine { /* drain */ }
+            process.errorStream.bufferedReader().forEachLine { /* drain */ }
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < 15000) {
+                try { return process.exitValue() } catch (_: RuntimeException) { Thread.sleep(80) }
+            }
+            try { process.destroy() } catch (_: Exception) {}
+            -2
+        } catch (e: Exception) {
+            Log.e(TAG, "rawOneShotShizuku failed", e)
+            -1
+        }
     }
 
     /**
@@ -182,16 +317,18 @@ object ShellExecutor {
      * @param host 目标主机 IP，默认 localhost
      * @param port ADB 端口，默认 5555
      * @param useShizuku 是否使用 Shizuku 执行
+     * @param env 附加环境变量
      * @return 执行结果
      */
     fun executeAdbCommand(
         command: String,
         host: String = "127.0.0.1",
         port: Int = 5555,
-        useShizuku: Boolean = true
+        useShizuku: Boolean = true,
+        env: Map<String, String> = emptyMap()
     ): ShellResult {
         val fullCommand = "adb -s $host:$port $command"
-        return execute(fullCommand, useShizuku)
+        return execute(fullCommand, useShizuku, env)
     }
 
     /**
@@ -200,15 +337,21 @@ object ShellExecutor {
      * Shizuku v13.1+ 将 Shizuku.newProcess() 标记为 private(@hide)，无法直接调用。
      * 采用反射方式强制访问：getDeclaredMethod + isAccessible = true
      * ProGuard 已 keep rikka.shizuku.**，所以方法名不会混淆。
+     *
+     * 环境变量采用"命令前缀 export"方式注入（而不是 newProcess 的 env 参数），
+     * 因为 Shizuku RemoteProcess 对 env=array 参数的处理因版本而异，
+     * 在命令前拼 `export K1=V1; export K2=V2; <cmd>` 则 100% 可靠。
      */
     private fun executeWithShizukuStreaming(
         command: String,
+        env: Map<String, String>,
         timeout: Long,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return try {
-            val cmdArray = arrayOf("sh", "-c", command)
+            val fullCmd = buildEnvPrefix(env) + command
+            val cmdArray = arrayOf("sh", "-c", fullCmd)
 
             // 通过反射调用 Shizuku.newProcess(cmdArray, env, dir)
             val shizukuClass = Class.forName("rikka.shizuku.Shizuku")
@@ -234,18 +377,35 @@ object ShellExecutor {
      */
     private fun executeWithNormalStreaming(
         command: String,
+        env: Map<String, String>,
         timeout: Long,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
         return try {
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            val fullCmd = buildEnvPrefix(env) + command
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", fullCmd))
             drainProcessStreams(process, timeout, onStdoutLine, onStderrLine)
         } catch (e: Exception) {
             Log.e(TAG, "Normal streaming execute error: $command", e)
             onStderrLine("[EXCEPTION] ${e.message ?: "Normal execute error"}")
             -1
         }
+    }
+
+    /**
+     * 将 env Map 转成 "export K=V; " 前缀。
+     *   - value 单引号转义：' → '\''
+     *   - 结果保证可拼接在 sh -c 命令之前
+     */
+    private fun buildEnvPrefix(env: Map<String, String>): String {
+        if (env.isEmpty()) return ""
+        val sb = StringBuilder()
+        for ((k, v) in env) {
+            val safe = v.replace("'", "'\\''")
+            sb.append("export ").append(k).append("='").append(safe).append("'; ")
+        }
+        return sb.toString()
     }
 
     /**

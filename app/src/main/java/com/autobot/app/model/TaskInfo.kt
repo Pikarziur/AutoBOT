@@ -14,6 +14,16 @@ data class TaskInfo(
     val command: String,
     val useShizuku: Boolean = true,
     val type: TaskType = TaskType.COMMAND,
+    /**
+     * 虚拟显示器 ID（>0 时注入 AUTOBOT_VD_DISPLAY_ID 环境变量，
+     * 让 .sh 脚本中 am / input 等命令只映射到 VD 执行）
+     */
+    val displayId: Int = -1,
+    /**
+     * 注入到 sh -c 命令前的额外环境变量（export K=V; 形式）。
+     * 除 displayId 自动注入的 AUTOBOT_VD_DISPLAY_ID 外都在这里。
+     */
+    val env: Map<String, String> = emptyMap(),
     // 运行过程中动态更新：status/endTime/exitCode/output 均为 var
     var status: TaskStatus = TaskStatus.PENDING,
     val startTime: Long = System.currentTimeMillis(),

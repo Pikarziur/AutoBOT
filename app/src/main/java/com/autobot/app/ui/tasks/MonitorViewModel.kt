@@ -287,8 +287,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * 执行任务（联动当前选中的模式）
+     *
+     * 前置约束（两个模式共用）：
+     *   - 任务/截图识别执行的动作必须只映射到 VD（虚拟显示器）
+     *   - 所以 **执行前必须确认 VD 已启动（compositionService.displayId > 0）**
+     *   - 未启动时给出提示（"请先点击播放按钮启动虚拟显示器"），阻止执行
+     *
      * - SH-ADB 模式：调用 TaskManager.submitTask 执行选中的 SH 脚本
-     *   （通过 ShellExecutor.executeScript → Shizuku 执行 SH 中的 ADB 指令）
+     *   （通过 ShellExecutor.executeScript → Shizuku 执行 SH 中的 ADB 指令；
+     *     同时注入 AUTOBOT_VD_DISPLAY_ID 环境变量，am/tap/input 等脚本命令
+     *     可通过 `--display $AUTOBOT_VD_DISPLAY_ID` 定向到 VD）
      * - 截图识别模式：占位提示"功能开发中"
      */
     fun executeTask() {
@@ -297,8 +305,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        // -------- VD 就绪检查（两个模式共用） --------
+        // 约束：两个模式执行的任务"只映射在 VD 执行"
+        //   因此未启动 VD 时一律拒绝执行，并给出与 Fullscreen 入口相同的提示文案。
+        val vdDisplayId = compositionService.displayId
+        if (vdDisplayId <= 0) {
+            _executeMessage.value = "请先点击播放按钮启动虚拟显示器"
+            return
+        }
+
         when (_selectedMode.value) {
-            TaskMode.SH_ADB -> executeShAdbTask()
+            TaskMode.SH_ADB -> executeShAdbTask(vdDisplayId)
             TaskMode.SCREENSHOT_RECOGNITION -> {
                 _executeMessage.value = "截图识别模式开发中，敬请期待"
                 Log.i(TAG, "Screenshot recognition mode not implemented yet")
@@ -308,8 +325,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * SH-ADB 模式：执行选中的 SH 脚本任务
+     *
+     * @param vdDisplayId 已就绪的虚拟显示器 ID（> 0），注入 AUTOBOT_VD_DISPLAY_ID 环境变量
      */
-    private fun executeShAdbTask() {
+    private fun executeShAdbTask(vdDisplayId: Int) {
         val taskId = _selectedScriptTaskId.value
         if (taskId == null) {
             _executeMessage.value = "请先选择一个 SH 脚本任务"
@@ -339,15 +358,19 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         _isExecuting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScript）
+                // 提交到 TaskManager 异步执行（type=SCRIPT 走 ShellExecutor.executeScriptStreaming）
+                // displayId：脚本 .sh 中通过 $AUTOBOT_VD_DISPLAY_ID 使用
+                //   - am start --display $AUTOBOT_VD_DISPLAY_ID -n pkg/.Act 启动到 VD
+                //   - input --display $AUTOBOT_VD_DISPLAY_ID tap x y 在 VD 画面上点击
                 TaskManager.submitTask(
                     name = task.name,
                     command = task.scriptPath,
                     type = TaskType.SCRIPT,
-                    useShizuku = true
+                    useShizuku = true,
+                    displayId = vdDisplayId
                 )
-                _executeMessage.value = "任务已启动：${task.name}"
-                Log.i(TAG, "SH-ADB task submitted: ${task.name} -> ${task.scriptPath}")
+                _executeMessage.value = "任务已启动：${task.name}（映射到显示器 #$vdDisplayId）"
+                Log.i(TAG, "SH-ADB task submitted: ${task.name} -> ${task.scriptPath}, vd=$vdDisplayId")
             } catch (e: Exception) {
                 Log.e(TAG, "executeShAdbTask failed", e)
                 _executeMessage.value = "任务启动失败：${e.message}"

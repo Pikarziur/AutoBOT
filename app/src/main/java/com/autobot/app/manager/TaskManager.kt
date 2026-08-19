@@ -60,19 +60,33 @@ object TaskManager {
      * @param command 命令内容（命令/sh脚本路径/adb命令）
      * @param type 任务类型
      * @param useShizuku 是否使用Shizuku权限
+     * @param displayId 虚拟显示器 ID（>0 时注入 AUTOBOT_VD_DISPLAY_ID 环境变量，
+     *                  脚本中可通过 am start --display $AUTOBOT_VD_DISPLAY_ID 启动 App 到 VD）
+     * @param extraEnv 附加环境变量（除 displayId 注入外）
      * @return 任务ID
      */
     fun submitTask(
         name: String,
         command: String,
         type: TaskType = TaskType.COMMAND,
-        useShizuku: Boolean = true
+        useShizuku: Boolean = true,
+        displayId: Int = -1,
+        extraEnv: Map<String, String> = emptyMap()
     ): String {
+        // 组合环境变量：displayId > 0 时注入 AUTOBOT_VD_DISPLAY_ID
+        val env: Map<String, String> = buildMap {
+            putAll(extraEnv)
+            if (displayId > 0) {
+                put("AUTOBOT_VD_DISPLAY_ID", displayId.toString())
+            }
+        }
         val task = TaskInfo(
             name = name,
             command = command,
             type = type,
-            useShizuku = useShizuku
+            useShizuku = useShizuku,
+            displayId = displayId,
+            env = env
         )
 
         val job = coroutineScope.launch {
@@ -112,21 +126,21 @@ object TaskManager {
             val exitCode = when (task.type) {
                 TaskType.COMMAND -> {
                     ShellExecutor.executeStreaming(
-                        task.command, task.useShizuku,
+                        task.command, task.useShizuku, task.env,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
                 }
                 TaskType.SCRIPT -> {
                     ShellExecutor.executeScriptStreaming(
-                        task.command, task.useShizuku,
+                        task.command, task.useShizuku, task.env,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
                 }
                 TaskType.ADB -> {
                     ShellExecutor.executeStreaming(
-                        task.command, task.useShizuku,
+                        task.command, task.useShizuku, task.env,
                         onStdoutLine = onOut,
                         onStderrLine = onErr
                     )
