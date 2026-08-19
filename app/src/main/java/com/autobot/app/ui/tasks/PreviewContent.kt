@@ -1,5 +1,6 @@
 package com.autobot.app.ui.tasks
 
+import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -61,9 +62,6 @@ fun PreviewContent(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 SurfaceView(ctx).apply {
-                    // VD 未启动时的默认背景色（#B6B6B6 中灰色）
-                    setBackgroundColor(0xFFB6B6B6.toInt())
-
                     // 设置 holder 格式为 RGBA_8888
                     holder.setFormat(PixelFormat.RGBA_8888)
 
@@ -72,6 +70,15 @@ fun PreviewContent(
                             // 必须先 setFixedSize 才能正确显示
                             holder.setFixedSize(bufferWidth, bufferHeight)
                             lastFixedSize = bufferWidth to bufferHeight
+
+                            // 用 Canvas 画一次背景色（只画一次，VD 启动后帧会覆盖）
+                            // 不能用 setBackgroundColor() —— 它会持续重绘覆盖 VD 帧
+                            try {
+                                val canvas: Canvas = holder.lockCanvas()
+                                canvas.drawColor(0xFFE8E4DE.toInt())
+                                holder.unlockCanvasAndPost(canvas)
+                            } catch (_: Exception) { }
+
                             onSurfaceAvailable()
                         }
 
