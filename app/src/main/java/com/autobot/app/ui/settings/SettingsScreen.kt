@@ -46,13 +46,19 @@ import com.autobot.app.manager.ShizukuManager
 /**
  * 设置页面 - Compose 实现（MAA-Meow 风格）
  *
- * 替代原 SettingsFragment，由 MainActivity 的 Scaffold 直接承载。
+ * 排版规范：
+ *   页面标题：22sp SemiBold（"设置"）
+ *   卡片标题：17sp SemiBold（"Shizuku"、"关于"）
+ *   正文/状态：14sp（动态信息）
+ *   辅助标签：13sp（表格标签等）
+ *   卡片内边距：16dp
+ *   卡片间距：16dp
  *
  * 结构：
  *   Surface(background) → Column(verticalScroll)
  *     ├ 标题 "设置"（22sp SemiBold）
- *     ├ ShizukuCard：状态文字 + 授权按钮 + 打开 Shizuku 按钮
- *     └ DeviceInfoCard：关于（设备型号 / 系统版本 / 屏幕分辨率 / 应用版本 横线表格）
+ *     ├ ShizukuCard：标题 + 状态行 + 启动行
+ *     └ DeviceInfoCard：标题 + 表格
  *
  * Shizuku 状态与授权逻辑下沉到 SettingsViewModel，UI 仅渲染 + 转发点击。
  * 颜色全部从 MaterialTheme.colorScheme 取，由 AutoBotTheme 统一注入。
@@ -94,16 +100,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 标题栏 "设置"
+            // 页面标题 "设置"
             Text(
                 text = "设置",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(Modifier.height(4.dp))
 
             ShizukuCard(
                 diagnosis = diagnosis,
@@ -117,15 +122,16 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 }
 
 /**
- * Shizuku 状态卡片（InfoCard 样式：0 阴影 12dp 圆角 16dp 内边距）
+ * Shizuku 状态卡片
  *
  * 布局：
+ *   卡片标题 "Shizuku"（17sp SemiBold）
  *   Row(SpaceBetween)
- *     ├ 左侧：状态文字（灰色/红色）
+ *     ├ 左侧：状态文字（纯黑色 14sp，动态切换）
  *     └ 右侧：Material3 Switch（已授权=开，未授权=关）
  *   Row(SpaceBetween)
- *     ├ 左侧："启动 Shizuku" 文本
- *     └ 右侧：蓝色 "打开" TextButton
+ *     ├ 左侧："启动 Shizuku"（14sp）
+ *     └ 右侧：蓝色 "打开" TextButton（14sp）
  */
 @Composable
 private fun ShizukuCard(
@@ -136,13 +142,8 @@ private fun ShizukuCard(
     // 开关状态：OK 时为 true，其余状态为 false
     val isAuthorized = diagnosis == ShizukuManager.ShizukuDiagnosis.OK
 
-    val (statusText, isError) = when (diagnosis) {
-        ShizukuManager.ShizukuDiagnosis.OK -> "Shizuku 已授权" to false
-        ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED -> "Shizuku 未安装" to true
-        ShizukuManager.ShizukuDiagnosis.NOT_CONNECTED -> "Shizuku 服务未启动" to true
-        ShizukuManager.ShizukuDiagnosis.NOT_GRANTED -> "Shizuku 已连接，但未授权" to true
-        ShizukuManager.ShizukuDiagnosis.UNKNOWN_ERROR -> "Shizuku 状态异常" to true
-    }
+    // 动态状态文字：纯黑色，已授权/未授权
+    val statusText = if (isAuthorized) "Shizuku 已授权" else "Shizuku 未授权"
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -155,9 +156,17 @@ private fun ShizukuCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 第一行：状态文字 + Switch
+            // 卡片标题 "Shizuku"
+            Text(
+                text = "Shizuku",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            // 第一行：状态文字（纯黑） + Switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -165,9 +174,8 @@ private fun ShizukuCard(
             ) {
                 Text(
                     text = statusText,
-                    fontSize = 13.sp,
-                    color = if (isError) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f)
                 )
                 Switch(
@@ -285,13 +293,16 @@ private fun DeviceInfoCard() {
         shadowElevation = 0.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 表格标题：关于（黑色 17sp SemiBold）
+            // 卡片标题 "关于"（17sp SemiBold，与 Shizuku 标题对齐）
             Text(
                 text = "关于",
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp)
+                modifier = Modifier.padding(
+                    start = 16.dp, end = 16.dp,
+                    top = 16.dp, bottom = 12.dp
+                )
             )
             TableDivider(color = dividerColor)
 
@@ -305,7 +316,7 @@ private fun DeviceInfoCard() {
 }
 
 /**
- * 表格行：左侧标签（灰色 13sp）+ 右侧值（黑色 14sp），SpaceBetween 布局，带底部横线
+ * 表格行：左侧标签（辅助灰 13sp）+ 右侧值（纯黑 14sp），SpaceBetween 布局，带底部横线
  *
  * @param isLast 最后一行不绘制底部分隔线，避免与卡片底边形成双线
  */
@@ -320,7 +331,7 @@ private fun TableRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
