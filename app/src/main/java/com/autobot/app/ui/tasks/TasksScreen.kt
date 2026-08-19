@@ -780,10 +780,11 @@ private fun TasksTabsSection(
  *
  * 布局自上而下：
  *   1. 模式选择（竖向 RadioButton + 文本，单选交互）
- *      - adb shell + [SH-ADB 下拉框]（同一行并排显示，仅 SH-ADB 模式下显示下拉框）
+ *      - adb shell
+ *      - 脚本任务下拉框（**adb shell 文字下方独立一行**，仅 SH-ADB 模式选中时显示）
  *      - 截图识别
  *   2. 模式对应内容区（weight(1f) 占满中部空间）
- *      - SH-ADB：无额外内容（下拉框已并排到 adb shell 行右侧）
+ *      - SH-ADB：无额外内容（脚本下拉框已放在模式行下方）
  *      - 截图识别：占位文本
  *   3. 底部执行任务按钮（跨模式，根据当前模式启用/禁用）
  *
@@ -801,7 +802,8 @@ private fun TasksTabContent(vm: MonitorViewModel) {
     Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 1. 模式选择（竖向 RadioButton） ----------
         // 布局：
-        //   ○ adb shell  [脚本下拉框▼]   ← 下拉框与 adb shell 同一行并排
+        //   ○ adb shell
+        //   [ 脚本任务下拉框 ▼ ]   ← 独立一行，放在"adb shell"文字的下方
         //   ○ 截图识别
         Column(
             modifier = Modifier
@@ -813,13 +815,11 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 label = "adb shell",
                 selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
                 onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) }
-            ) {
-                // SH-ADB 模式下：下拉框与 adb shell 标签并排显示在同一 Row 内
-                // weight(1f)：占满 Row 剩余宽度（RadioButton + 文本之后）
-                if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
-                    Spacer(Modifier.width(12.dp))
-                    ShAdbModeContent(vm, Modifier.weight(1f))
-                }
+            )
+
+            // ★脚本任务下拉框：放在"adb shell"文字下方独立一行，仅 SH-ADB 模式选中时显示
+            if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
+                ShAdbModeContent(vm)
             }
 
             ModeRadioButtonRow(
@@ -830,7 +830,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         }
 
         // ---------- 2. 模式对应内容区 ----------
-        // SH-ADB：下拉框已移至 RadioButton 之间，此处无额外内容（保留弹性空间）
+        // SH-ADB：脚本下拉框已放在模式行下方，此处保留弹性空间
         // 截图识别：占位文本
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) {
@@ -898,17 +898,13 @@ private fun TasksTabContent(vm: MonitorViewModel) {
  * - selected=true ：RadioButton 选中 + 文字主色 onSurface
  * - selected=false：RadioButton 未选 + 文字灰 onSurfaceVariant
  * 始终可点击，单选交互（点未选项即切换到该模式）
- *
- * - trailingContent：行尾额外内容（RowScope），用于在 RadioButton+文本右侧并排显示
- *   其他控件（如 SH-ADB 模式下的脚本下拉框，与 adb shell 标签同一行）
  */
 @Composable
 private fun ModeRadioButtonRow(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    trailingContent: @Composable RowScope.() -> Unit = {}
+    modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier
@@ -938,16 +934,14 @@ private fun ModeRadioButtonRow(
                 MaterialTheme.colorScheme.onSurfaceVariant
             }
         )
-        // 行尾内容：占用剩余宽度（如 SH-ADB 模式的脚本下拉框）
-        trailingContent()
     }
 }
 
 /**
- * SH-ADB 模式内容（脚本下拉框）
+ * SH-ADB 模式内容（脚本任务下拉框）
  *
- * 调用位置：嵌入 [ModeRadioButtonRow] 的 trailingContent 中，与 "adb shell" 标签同一行并排显示
- *   - modifier 一般传 Modifier.weight(1f) 占满 Row 剩余宽度
+ * 调用位置：作为独立一行放在【adb shell】RadioButton 行的**下方**、截图识别行的上方，
+ *          仅当 SH-ADB 模式被选中时才显示（未选中时不占高度）
  *
  * 下拉框行为：
  *   - 显示当前选中的脚本任务名（或"请选择脚本"占位）
