@@ -73,9 +73,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 注意：不调用 setDecorFitsSystemWindows(false)
-        // 保持默认模式，让 WindowInsets API 返回真实系统栏尺寸，
-        // 这样 FullscreenMonitor 中的 windowInsetsPadding 才能正确抵消状态栏/挖孔区域。
+        // 保持默认模式（不调用 setDecorFitsSystemWindows(false)）
+        // 全屏模式由 FullscreenMonitor 的 DisposableEffect 临时设置/恢复
         checkNotificationPermission()
         setContent {
             AutoBotTheme {

@@ -16,18 +16,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -426,134 +421,100 @@ private fun FullscreenMonitor(
     }
 
     // ============ 等比缩放 + 黑边（对齐 MAA-Meow 全屏实现） ============
-    // 外层：屏幕黑底（黑边来源）
-    // 中层：BoxWithConstraints 等比计算预览区域尺寸并居中
-    // 内层：实际显示区域，SurfaceView + 触摸事件 + 退出按钮都在这里
-    //       这样 viewToVirtualDisplay 接收的 viewWidth/viewHeight 与 VD 比例一致，
-    //       黑边偏移自然为 0，触摸点不会因误判黑边而被丢弃。
-    //
-    // 关键：用 windowInsetsPadding(systemBars + displayCutout) 抵消 decorView 比 screen 多出的空间
-    // （状态栏/导航栏隐藏后 setDecorFitsSystemWindows(false) 让 decorView 包含系统栏区域，
-    //  但屏幕顶部挖孔/相机区域实际不可见，导致 Compose 居中算出的"等距黑边"在视觉上偏下）
+    // 关键：用 DisplayMetrics 真实屏幕尺寸替代 fillMaxSize()
+    // setDecorFitsSystemWindows(false) 会让 WindowInsets API 返回 0，
+    // windowInsetsPadding 完全失效。但 DisplayMetrics 始终返回真实屏幕尺寸，
+    // 不受任何 Window 设置影响，用它约束 BoxWithConstraints 即可实现严格等距居中。
+    val dm = context.resources.displayMetrics
+    val screenWidthDp = (dm.widthPixels / dm.density).dp
+    val screenHeightDp = (dm.heightPixels / dm.density).dp
+
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .windowInsetsPadding(
-                WindowInsets.systemBars.union(WindowInsets.displayCutout)
-            )
+            .width(screenWidthDp)
+            .height(screenHeightDp)
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
     ) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            // 与小窗模式 VirtualDisplayPreview 完全一致的等比缩放算法
-            val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
-                bufferWidth.toFloat() / bufferHeight.toFloat()
-            } else {
-                16f / 9f  // 兜底
-            }
-            val maxWidthPx = maxWidth
-            val maxHeightPx = maxHeight
-            val widthFromHeight = maxHeightPx * aspectRatio
-            val heightFromWidth = maxWidthPx / aspectRatio
-            val (previewW, previewH) = if (widthFromHeight <= maxWidthPx) {
-                widthFromHeight to maxHeightPx
-            } else {
-                maxWidthPx to heightFromWidth
-            }
+        // 与小窗模式 VirtualDisplayPreview 完全一致的等比缩放算法
+        val aspectRatio = if (bufferWidth > 0 && bufferHeight > 0) {
+            bufferWidth.toFloat() / bufferHeight.toFloat()
+        } else {
+            16f / 9f  // 兜底
+        }
+        val maxWidthPx = screenWidthDp
+        val maxHeightPx = screenHeightDp
+        val widthFromHeight = maxHeightPx * aspectRatio
+        val heightFromWidth = maxWidthPx / aspectRatio
+        val (previewW, previewH) = if (widthFromHeight <= maxWidthPx) {
+            widthFromHeight to maxHeightPx
+        } else {
+            maxWidthPx to heightFromWidth
+        }
 
-            // ===== 诊断日志（临时，定位完黑边问题后删除）=====
-            // 用全限定名避免 import 错误；用 ViewCompat 获取 insets 兼容所有 Android 版本
-            LaunchedEffect(previewW, previewH, maxWidthPx, maxHeightPx) {
-                val dm = context.resources.displayMetrics
-                val activity = context.findActivity()
-                val decorView = activity?.window?.decorView
-                val rootInsets = decorView?.let {
-                    androidx.core.view.ViewCompat.getRootWindowInsets(it)
-                }
-                val statusBarTop = rootInsets?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: -1
-                val navBarBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: -1
-                android.util.Log.i(
-                    "FullscreenDiag",
-                    buildString {
-                        appendLine("=== 全屏黑边诊断 ===")
-                        appendLine("VD buffer       = ${bufferWidth}x${bufferHeight} (ratio=$aspectRatio)")
-                        appendLine("BoxWithConstraints max = ${maxWidthPx.value} x ${maxHeightPx.value} (Dp)")
-                        appendLine("计算 previewW x previewH = ${previewW.value} x ${previewH.value} (Dp)")
-                        appendLine("density         = ${dm.density}")
-                        appendLine("DisplayMetrics  = ${dm.widthPixels}x${dm.heightPixels}px")
-                        appendLine("decorView size  = ${decorView?.width ?: -1}x${decorView?.height ?: -1}px")
-                        appendLine("statusBar inset top  = ${statusBarTop}px")
-                        appendLine("navBar inset bottom  = ${navBarBottom}px")
-                    }
-                )
-            }
+        // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
+        Box(
+            modifier = Modifier
+                .width(previewW)
+                .height(previewH)
+                .pointerInput(bufferWidth, bufferHeight) {
+                    var lastX = 0
+                    var lastY = 0
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: continue
+                            val viewX = change.position.x.toInt()
+                            val viewY = change.position.y.toInt()
 
-            // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
-            Box(
-                modifier = Modifier
-                    .width(previewW)
-                    .height(previewH)
-                    .pointerInput(bufferWidth, bufferHeight) {
-                        var lastX = 0
-                        var lastY = 0
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull() ?: continue
-                                val viewX = change.position.x.toInt()
-                                val viewY = change.position.y.toInt()
+                            val mapped = viewToVirtualDisplay(
+                                viewX = viewX,
+                                viewY = viewY,
+                                viewWidth = size.width,
+                                viewHeight = size.height,
+                                bufferWidth = bufferWidth,
+                                bufferHeight = bufferHeight
+                            )
 
-                                val mapped = viewToVirtualDisplay(
-                                    viewX = viewX,
-                                    viewY = viewY,
-                                    viewWidth = size.width,
-                                    viewHeight = size.height,
-                                    bufferWidth = bufferWidth,
-                                    bufferHeight = bufferHeight
-                                )
+                            if (mapped == null) continue
 
-                                if (mapped == null) continue
-
-                                val (vx, vy) = mapped
-                                when (event.type) {
-                                    PointerEventType.Press -> {
-                                        lastX = vx
-                                        lastY = vy
-                                        vm.onTouchDown(vx, vy)
-                                    }
-                                    PointerEventType.Move -> {
-                                        vm.onTouchMove(lastX, lastY, vx, vy)
-                                        lastX = vx
-                                        lastY = vy
-                                    }
-                                    PointerEventType.Release -> {
-                                        vm.onTouchUp(vx, vy)
-                                    }
-                                    else -> { /* ignore */ }
+                            val (vx, vy) = mapped
+                            when (event.type) {
+                                PointerEventType.Press -> {
+                                    lastX = vx
+                                    lastY = vy
+                                    vm.onTouchDown(vx, vy)
                                 }
+                                PointerEventType.Move -> {
+                                    vm.onTouchMove(lastX, lastY, vx, vy)
+                                    lastX = vx
+                                    lastY = vy
+                                }
+                                PointerEventType.Release -> {
+                                    vm.onTouchUp(vx, vy)
+                                }
+                                else -> { /* ignore */ }
                             }
                         }
                     }
-            ) {
-                // SurfaceView 填满实际显示区域
-                previewContent()
-
-                // 退出按钮放在画面右上角（黑边内），避免遮挡到屏幕边缘
-                IconButton(
-                    onClick = onExit,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "退出全屏",
-                        tint = Color.White
-                    )
                 }
+        ) {
+            // SurfaceView 填满实际显示区域
+            previewContent()
+
+            // 退出按钮放在画面右上角（黑边内），避免遮挡到屏幕边缘
+            IconButton(
+                onClick = onExit,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "退出全屏",
+                    tint = Color.White
+                )
             }
         }
     }
