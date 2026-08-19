@@ -53,7 +53,9 @@ fun PreviewContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            // 底色用灰色：未启动时与右上角"未启动"指示器形成统一视觉风格
+            // 运行时被 SurfaceView 帧铺满，底色不可见
+            .background(Color(0xFF424242))
     ) {
         // 不再在 AndroidView 上加 aspectRatio —— 外层 VirtualDisplayPreview 的 Card
         // 已经通过 BoxWithConstraints + 宽高比计算限定了尺寸，这里 fillMaxSize 即可

@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
@@ -179,7 +180,18 @@ fun TasksScreen(
                         isRunning = isRunning,
                         isSurfaceAvailable = isSurfaceAvailable,
                         displaySize = displaySize,
-                        onClick = { isFullscreen = true }
+                        onClick = {
+                            // 未启动时禁止进入全屏（VD 不存在，进全屏没意义）
+                            if (!isRunning) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "请先点击播放按钮启动虚拟显示器",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@VirtualDisplayPreview
+                            }
+                            isFullscreen = true
+                        }
                     ) {
                         previewContent()
                     }
