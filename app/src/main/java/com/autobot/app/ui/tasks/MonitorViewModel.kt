@@ -347,10 +347,14 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // -iname：不区分大小写（匹配 .sh / .SH / .Sh）
+                // -maxdepth 6：放宽递归深度，覆盖 /sdcard/a/b/c/d/e/x.sh 等
+                // 不用 2>/dev/null：让 Permission denied 等错误浮到 stderr，便于诊断
+                //   （ShellExecutor 用 sh -c 执行，stderr 会被捕获并显示给用户）
                 val result = ShellExecutor.execute(
-                    "find /sdcard -maxdepth 4 -name '*.sh' -type f 2>/dev/null",
+                    "find /sdcard -maxdepth 6 -iname '*.sh' -type f",
                     useShizuku = true,
-                    timeout = 15_000
+                    timeout = 20_000
                 )
                 if (result.isSuccess) {
                     val paths = result.stdout
@@ -359,7 +363,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                         .filter { it.isNotEmpty() }
                     _shFileList.value = paths
                     if (paths.isEmpty()) {
-                        _executeMessage.value = "未找到 .sh 文件，请先 push 到 /sdcard/"
+                        // 把 stderr 也带上，方便用户判断是"真没文件"还是"权限拒绝导致扫描为空"
+                        val diag = if (result.stderr.isNotBlank()) {
+                            "（stderr: ${result.stderr.take(120)}）"
+                        } else ""
+                        _executeMessage.value = "未找到 .sh 文件，请先 push 到 /sdcard/$diag"
                     }
                 } else {
                     _executeMessage.value = "扫描 .sh 文件失败：${result.stderr.ifBlank { "exit=${result.exitCode}" }}"
