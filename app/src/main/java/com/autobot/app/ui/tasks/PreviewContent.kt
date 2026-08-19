@@ -41,7 +41,6 @@ fun PreviewContent(
     onSurfaceDestroyed: () -> Unit = {}
 ) {
     val displaySize by vm.displaySize.collectAsStateWithLifecycle()
-    val touchMarkers by vm.touchMarkers.collectAsStateWithLifecycle()
 
     // 记录最近一次传递给 ViewModel 的 Surface，避免重复传递
     var lastSentSurface by remember { mutableStateOf<android.view.Surface?>(null) }
@@ -135,4 +134,6 @@ fun PreviewContent(
                     }
                 }
             }
+        )
+    }
 }
