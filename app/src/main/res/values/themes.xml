@@ -21,8 +21,8 @@
         <!-- 状态栏与页面底色一致 → 全面屏效果，深色图标 -->
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">true</item>
-        <!-- 导航栏（虚拟按键）背景也跟随白色 -->
-        <item name="android:navigationBarColor">@color/background</item>
+        <!-- 导航栏（虚拟按键）背景与 NavigationBar 容器色一致（纯白），避免底部露底 -->
+        <item name="android:navigationBarColor">@color/white</item>
         <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
     </style>
 
