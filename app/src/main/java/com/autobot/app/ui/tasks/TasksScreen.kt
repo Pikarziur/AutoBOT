@@ -1,6 +1,9 @@
 package com.autobot.app.ui.tasks
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
@@ -8,6 +11,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.ImageView
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +31,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -36,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
@@ -230,16 +237,20 @@ fun TasksScreen(
                         }
                     )
 
-                    // 视觉分隔：启动条 vs 任务日志区 - 两个独立组件，留出空白间距
-                    Spacer(modifier = Modifier.height(8.dp))
+                    // 视觉分隔：启动条 vs 任务日志区 - 加大间距形成"呼吸感"
+                    // （两个是独立的白色组件，靠得太近会显得"粘"在一起）
+                    Spacer(modifier = Modifier.height(24.dp))
 
                     // 任务/日志 选项卡区域（淘宝启动条下方）
-                    // weight(1f)：占满 70% 业务区扣除启动条之后的剩余高度
-                    // 仅底部 8dp padding 留间距；左右无 padding，宽度与 TaobaoLauncherRow 完全对齐
+                    // weight(1f)：占满 70% 业务区扣除启动条 + 24dp 间距之后的剩余高度
+                    // widthIn(max=520dp)：大屏/横屏下限制最大宽度，让卡片不显得过长
+                    // wrapContentWidth + start/end padding：与启动条视觉对齐且居中留白
                     TasksTabsSection(
                         vm = vm,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .wrapContentWidth(Alignment.CenterHorizontally)
+                            .widthIn(max = 520.dp)
                             .weight(1f)
                             .padding(bottom = 8.dp)
                     )
@@ -799,6 +810,9 @@ private fun TasksTabContent(vm: MonitorViewModel) {
     val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
     val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
 
+    // ★统一的"内容水平内边距"：让卡片内容不贴左右边，视觉更精致
+    val contentHPadding = 20.dp
+
     Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 1. 模式选择（竖向 RadioButton） ----------
         // 布局：
@@ -808,8 +822,8 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(horizontal = contentHPadding, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             ModeRadioButtonRow(
                 label = "adb shell",
@@ -832,7 +846,12 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         // ---------- 2. 模式对应内容区 ----------
         // SH-ADB：脚本下拉框已放在模式行下方，此处保留弹性空间
         // 截图识别：占位文本
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = contentHPadding)
+        ) {
             if (selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) {
                 // 截图识别模式占位（后续版本完善）
                 Box(
@@ -873,7 +892,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             enabled = canExecute,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 8.dp)
+                .padding(horizontal = contentHPadding, vertical = 12.dp)
                 .height(48.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -1119,6 +1138,21 @@ private fun ShAdbModeContent(
 private fun LogsTabContent(vm: MonitorViewModel) {
     val logs by vm.scriptLogs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+
+    // 复制全部日志到剪贴板
+    fun copyAllLogs() {
+        val text = logs.joinToString("\n")
+        if (text.isBlank()) {
+            Toast.makeText(context, "无日志可复制", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("AutoBOT 执行日志", text))
+        Toast.makeText(context,
+            "已复制 ${logs.size} 行日志到剪贴板",
+            Toast.LENGTH_SHORT).show()
+    }
 
     // 日志列表新增 → 自动滚到底部（最新）
     LaunchedEffect(logs.size) {
@@ -1128,13 +1162,29 @@ private fun LogsTabContent(vm: MonitorViewModel) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 头部：标题 + 清空按钮 ----------
+        // ★统一水平 padding，与任务 Tab 保持一致，不让内容顶到卡片边
+        val contentHPadding = 20.dp
+
+        // ---------- 头部：复制按钮 + 标题 + 清空按钮 ----------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
+                .padding(horizontal = contentHPadding, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // ★复制按钮：在标题"左边"，复制完整日志（空列表时禁用）
+            TextButton(
+                onClick = { copyAllLogs() },
+                enabled = logs.isNotEmpty()
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("复制")
+            }
             Text(
                 text = "执行日志（${logs.size}）",
                 style = MaterialTheme.typography.titleSmall,
@@ -1155,7 +1205,9 @@ private fun LogsTabContent(vm: MonitorViewModel) {
         // ---------- 日志列表 ----------
         if (logs.isEmpty()) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = contentHPadding),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -1168,7 +1220,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = listState,
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(horizontal = contentHPadding, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 items(logs) { line ->
