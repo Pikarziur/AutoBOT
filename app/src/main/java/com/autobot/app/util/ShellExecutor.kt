@@ -5,6 +5,7 @@ import com.autobot.app.manager.ShizukuManager
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -410,29 +411,38 @@ object ShellExecutor {
                 val vdW   = vdEnvForScaling["AUTOBOT_VD_WIDTH"]?.toIntOrNull() ?: 0
                 val vdH   = vdEnvForScaling["AUTOBOT_VD_HEIGHT"]?.toIntOrNull() ?: 0
                 if (baseW > 0 && baseH > 0 && vdW > 0 && vdH > 0) {
-                    // 千分比缩放，避免 sh 浮点： _autobot_sx ‰ = vdW * 1000 / baseW
-                    sb.appendLine("# =============================================================")
-                    sb.appendLine("# AutoBOT 自动坐标缩放（不改脚本）：")
-                    sb.appendLine("#   BASE（写脚本时的手机分辨率）=$baseW x $baseH")
-                    sb.appendLine("#   VD（实际注入到的虚拟显示器）=$vdW x $vdH")
-                    sb.appendLine("#   sx=${vdW * 1000.0 / baseW}‰  sy=${vdH * 1000.0 / baseH}‰")
-                    sb.appendLine("#   超出 VD 的点会被自动裁到 VD 边界（=自动贴边，不会\"点了没反应\"）")
-                    sb.appendLine("# =============================================================")
-                    sb.appendLine("_autobot_sx=\$(( (${vdW} * 1000) / $baseW ))   # 水平缩放系数(‰)")
-                    sb.appendLine("_autobot_sy=\$(( (${vdH} * 1000) / $baseH ))   # 垂直缩放系数(‰)")
-                    sb.appendLine("_autobot_vdw=$vdW")
-                    sb.appendLine("_autobot_vdh=$vdH")
-                    // _autobot_scalex X → 返回 clamp( round(X * sx‰), 0..vdW-1 )
-                    sb.append("_autobot_scalex() { local _x; _x=\\$(( (\\$1 * \\$_autobot_sx + 500) / 1000 )); ")
-                    sb.append("if [ \\$_x -lt 0 ]; then _x=0; fi; ")
-                    sb.append("if [ \\$_x -ge \\$_autobot_vdw ]; then _x=\\$((\\$_autobot_vdw-1)); fi; ")
-                    sb.appendLine("printf '%s' \"\\$_x\"; }")
-                    // _autobot_scaley Y → 返回 clamp( round(Y * sy‰), 0..vdH-1 )
-                    sb.append("_autobot_scaley() { local _y; _y=\\$(( (\\$1 * \\$_autobot_sy + 500) / 1000 )); ")
-                    sb.append("if [ \\$_y -lt 0 ]; then _y=0; fi; ")
-                    sb.append("if [ \\$_y -ge \\$_autobot_vdh ]; then _y=\\$((\\$_autobot_vdh-1)); fi; ")
-                    sb.appendLine("printf '%s' \"\\$_y\"; }")
-                    sb.appendLine()
+                    val sx = vdW * 1000.0 / baseW
+                    val sy = vdH * 1000.0 / baseH
+                    val d = '$'  // sh 变量插值用的 $，在这里先存成字面量，避免 Kotlin 把 $_xxx 当 kotlin 引用
+                    // 千分比缩放 + 边界裁剪 sh 函数
+                    val block = """
+                    |# =============================================================
+                    |# AutoBOT 自动坐标缩放（不改脚本）：
+                    |#   BASE（写脚本时的手机分辨率）=$baseW x $baseH
+                    |#   VD  （实际注入的虚拟显示器）=$vdW x $vdH
+                    |#   sx=${String.format(Locale.US, "%.1f", sx)}‰   sy=${String.format(Locale.US, "%.1f", sy)}‰
+                    |#   超出 VD 的点自动贴边（不会"点了没反应"/命不中窗口）
+                    |# =============================================================
+                    |_autobot_sx=${d}(( ($vdW * 1000) / $baseW ))   # 水平缩放系数(‰)
+                    |_autobot_sy=${d}(( ($vdH * 1000) / $baseH ))   # 垂直缩放系数(‰)
+                    |_autobot_vdw=$vdW
+                    |_autobot_vdh=$vdH
+                    |_autobot_scalex() {
+                    |  local _x
+                    |  _x=${d}(( (${d}1 * ${d}_autobot_sx + 500) / 1000 ))
+                    |  if [ ${d}_x -lt 0 ]; then _x=0; fi
+                    |  if [ ${d}_x -ge ${d}_autobot_vdw ]; then _x=${d}(( ${d}_autobot_vdw - 1 )); fi
+                    |  printf '%s' "${d}_x"
+                    |}
+                    |_autobot_scaley() {
+                    |  local _y
+                    |  _y=${d}(( (${d}1 * ${d}_autobot_sy + 500) / 1000 ))
+                    |  if [ ${d}_y -lt 0 ]; then _y=0; fi
+                    |  if [ ${d}_y -ge ${d}_autobot_vdh ]; then _y=${d}(( ${d}_autobot_vdh - 1 )); fi
+                    |  printf '%s' "${d}_y"
+                    |}
+                    """.trimMargin()
+                    sb.appendLine(block)
                 }
             }
 
@@ -686,10 +696,11 @@ object ShellExecutor {
         // 这样即便 wrapper 没有注入缩放函数（缺 BASE/VD 变量），脚本行为也完全回退 = 原样执行，
         // 不会报错 command not found，也不会乱。
 
+        val dollar = '$'
         fun sx(n: String) =
-            "\$(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex $n || printf '%s' $n)"
+            "${dollar}(command -v _autobot_scalex >/dev/null 2>&1 && _autobot_scalex $n || printf '%s' $n)"
         fun sy(n: String) =
-            "\$(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley $n || printf '%s' $n)"
+            "${dollar}(command -v _autobot_scaley >/dev/null 2>&1 && _autobot_scaley $n || printf '%s' $n)"
 
         // 先把 tokens 里的 "--display <DID>" 抽出来，按 input SUBCOMMAND --display DID <rest...> 顺序重排
         val rest = tokens.drop(2).toMutableList()
