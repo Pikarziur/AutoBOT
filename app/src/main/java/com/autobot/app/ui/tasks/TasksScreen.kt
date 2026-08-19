@@ -375,16 +375,9 @@ private fun FullscreenMonitor(
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
         val originalOrientation = activity?.requestedOrientation
 
-        // 关键：让 Window 不再为系统栏（状态栏/导航栏）预留 inset 空间
-        // 这样 BoxWithConstraints(fillMaxSize) 拿到的就是真正的整屏尺寸，
-        // 居中后黑边严格等距，画面不会偏下。
-        // 原本只调用 controller.hide() 只是"隐藏"，Window 仍会按系统栏高度预留空白。
-        val originalDecorFitsSystemWindows = if (window != null) {
-            // Android 15+ 默认 true，低版本默认 false；统一记录原值用于恢复
-            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R
-        } else false
-        window?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
-
+        // 注意：setDecorFitsSystemWindows(false) 已在 MainActivity.onCreate 中调用，
+        // 这里不再重复设置（重复设置 + onDispose 恢复会破坏全屏模式）
+        // 这里只负责隐藏系统栏图标 + 锁定方向 + 保持屏幕常亮
         controller?.let {
             it.hide(WindowInsetsCompat.Type.statusBars())
             it.systemBarsBehavior =
@@ -403,8 +396,6 @@ private fun FullscreenMonitor(
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars())
             controller?.show(WindowInsetsCompat.Type.navigationBars())
-            // 恢复 DecorFitsSystemWindows 原值，避免退出全屏后小窗模式布局异常
-            window?.let { WindowCompat.setDecorFitsSystemWindows(it, originalDecorFitsSystemWindows) }
             if (originalOrientation != null && activity != null) {
                 activity.requestedOrientation = originalOrientation
             } else if (activity != null) {
@@ -443,31 +434,6 @@ private fun FullscreenMonitor(
                 widthFromHeight to maxHeightPx
             } else {
                 maxWidthPx to heightFromWidth
-            }
-
-            // ===== 诊断日志：测量所有影响居中的尺寸（临时，定位完黑边问题后删除） =====
-            LaunchedEffect(previewW, previewH, maxWidthPx, maxHeightPx) {
-                val dm = context.resources.displayMetrics
-                val activity = context.findActivity()
-                val realScreenH = dm.heightPixels
-                val realScreenW = dm.widthPixels
-                val windowH = activity?.window?.decorView?.height ?: -1
-                val windowW = activity?.window?.decorView?.width ?: -1
-                android.util.Log.i(
-                    "FullscreenDiag",
-                    buildString {
-                        appendLine("=== 全屏黑边诊断 ===")
-                        appendLine("VD buffer       = ${bufferWidth}x${bufferHeight} (ratio=$aspectRatio)")
-                        appendLine("BoxWithConstraints maxWidth x maxHeight = ${maxWidthPx.value} x ${maxHeightPx.value} (Dp)")
-                        appendLine("计算 previewW x previewH = ${previewW.value} x ${previewH.value} (Dp)")
-                        appendLine("density         = ${dm.density}")
-                        appendLine("DisplayMetrics  = ${realScreenW}x${realScreenH}px")
-                        appendLine("decorView size  = ${windowW}x${windowH}px")
-                        appendLine("状态栏 inset    = ${android.view.WindowManagerCompat.getCurrentWindowInsets(activity?.window?.decorView)?.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars())}")
-                        appendLine("导航栏 inset    = ${android.view.WindowManagerCompat.getCurrentWindowInsets(activity?.window?.decorView)?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())}")
-                        // 关键判断：如果 maxWidth/maxHeight != decorView 尺寸，说明还有 inset 占用
-                    }
-                )
             }
 
             // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应

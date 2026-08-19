@@ -19,7 +19,6 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.TaskManager
@@ -73,6 +73,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 关键：窗口创建时就禁用系统栏 inset 自动 padding
+        // 必须在 setContent 之前调用，否则窗口已测量过一次，
+        // 全屏模式下 BoxWithConstraints 拿到的尺寸会小于真实屏幕高度，
+        // 导致等比缩放后顶部黑边大于底部。
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         checkNotificationPermission()
         setContent {
             AutoBotTheme {
@@ -150,9 +155,11 @@ private fun MainScreen() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        // 全屏时不消费系统栏 inset，让内容区真正占满整个窗口
-        // 非全屏时用 Scaffold 默认的 safeDrawing 行为，配合页面自己的 statusBarsPadding
-        contentWindowInsets = if (isFullscreen) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
+        // onCreate 已 setDecorFitsSystemWindows(false)，窗口不会自动加 inset padding
+        // Scaffold 也不消费 inset（始终 WindowInsets(0)）：
+        //   - 全屏：content 真正占满整屏 → BoxWithConstraints 拿到真实尺寸 → 黑边严格等距居中
+        //   - 非全屏：由各页面自己用 statusBarsPadding 处理状态栏（避免与 Scaffold 双重 padding）
+        contentWindowInsets = WindowInsets(0),
         bottomBar = {
             // 全屏时隐藏底部导航栏（不渲染，content 区域自动扩展到全屏）
             if (!isFullscreen) {
@@ -163,12 +170,11 @@ private fun MainScreen() {
             }
         }
     ) { padding ->
+        // padding 此时为 0（contentWindowInsets=WindowInsets(0)），无需应用
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                // 全屏时不应用 Scaffold 计算的 padding（避免顶部预留状态栏高度）
-                .then(if (isFullscreen) Modifier else Modifier.padding(padding))
         ) {
             when (currentTab) {
                 MainTab.TASKS -> TasksScreen()
