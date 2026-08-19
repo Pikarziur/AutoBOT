@@ -119,7 +119,7 @@ object ShellExecutor {
         useShizuku: Boolean,
         env: Map<String, String>,
         timeout: Long,
-        cancel: CancelHandle?,
+        cancel: CancelHandle? = null,
         onStdoutLine: (String) -> Unit,
         onStderrLine: (String) -> Unit
     ): Int {
