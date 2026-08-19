@@ -217,11 +217,14 @@ object TaskIsolator {
                 // 注意：不重置 currentTaskId，因为有些格式 display 和 task 可能在不同行
             }
             // 更新 currentTaskId（多格式尝试，第一个匹配即用）
-            for (regex in taskIdRegexes) {
-                regex.find(line)?.let { m ->
-                    currentTaskId = m.groupValues[1].toIntOrNull() ?: -1
-                    break
-                }
+            // 注意：不能用 for + break，因为 break 在 let 内联 lambda 里是实验性特性。
+            // 用 firstNotNullOfOrNull：匹配到任一 regex 就用该值，
+            // 没匹配到则保持上一行的 currentTaskId 不变（兼容 display 和 task 分两行的情况）
+            val matchedTaskId = taskIdRegexes.firstNotNullOfOrNull { regex ->
+                regex.find(line)?.let { m -> m.groupValues[1].toIntOrNull() }
+            }
+            if (matchedTaskId != null) {
+                currentTaskId = matchedTaskId
             }
             // 检查是否含包名引用
             val pkgMatch = pkgRegex.find(line)
