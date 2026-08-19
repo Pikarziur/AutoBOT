@@ -62,7 +62,7 @@ fun PreviewContent(
             factory = { ctx ->
                 SurfaceView(ctx).apply {
                     // SurfaceView 默认背景设为深灰色，未运行时显示灰色而非纯黑
-                    setBackgroundColor(0xFF333333)
+                    setBackgroundColor(0xFF333333.toInt())
                     // 设置 holder 格式为 RGBA_8888
                     holder.setFormat(PixelFormat.RGBA_8888)
 
