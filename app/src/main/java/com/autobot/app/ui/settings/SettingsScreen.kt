@@ -148,7 +148,7 @@ private fun ShizukuCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = Color.White,  // 纯白底 #FFFFFF（覆盖 surface #F9F7F3）
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
@@ -288,7 +288,7 @@ private fun DeviceInfoCard() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = Color.White,  // 纯白底 #FFFFFF（覆盖 surface #F9F7F3）
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {

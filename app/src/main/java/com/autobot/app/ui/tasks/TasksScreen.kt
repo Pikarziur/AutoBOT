@@ -594,7 +594,7 @@ private fun TaobaoLauncherRow(
             .padding(top = 12.dp)
             .clip(RoundedCornerShape(12.dp)),
         colors = ListItemDefaults.colors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = Color.White  // 纯白底 #FFFFFF（覆盖 surfaceVariant #E8E4DE）
         ),
         leadingContent = {
             AppIconDrawable(
