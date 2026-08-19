@@ -116,11 +116,11 @@ fun TasksScreen(
         }
     }
 
-    // 初次进入：启动虚拟显示器 + 加载淘宝图标
+    // 初次进入：仅加载淘宝图标
+    // 不再自动启动虚拟显示器——VD 由用户点击播放按钮时
+    // 通过 launchAppWithOrientationAdaptation() 重建（先 stop 再 start），
+    // 进入页面就自动启动只会得到一个空 VD（黑屏）+ 误导性的"运行中"指示
     LaunchedEffect(Unit) {
-        if (!isRunning) {
-            vm.startVirtualDisplay()
-        }
         scope.launch(Dispatchers.IO) {
             val appInfo = AppManager.getAppByPackageName(context, AppManager.DEFAULT_PACKAGE_TAOBAO)
             if (appInfo != null) {
