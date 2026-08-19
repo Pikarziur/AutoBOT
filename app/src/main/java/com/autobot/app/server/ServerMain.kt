@@ -429,20 +429,18 @@ object ServerMain {
                 0,  // repeat
                 0   // metaState
             )
-            try {
-                // 设置 displayId → 注入到虚拟显示器而非主屏幕
-                setDisplayId?.invoke(downEvent, displayId)
-                setDisplayId?.invoke(upEvent, displayId)
-                // 设置键盘源
-                downEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
-                upEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
-                // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
-                inject.invoke(im, downEvent, 0)
-                inject.invoke(im, upEvent, 0)
-                Log.i(TAG, "✅ KEYCODE_BACK injected to displayId=$displayId")
-                // 注意：KeyEvent.recycle() 在 API 35 已移除，KeyEvent 较轻量由 GC 回收
-                // （MotionEvent.recycle() 仍保留，因为 MotionEvent 包含 native 指针表）
-            }
+            // 设置 displayId → 注入到虚拟显示器而非主屏幕
+            setDisplayId?.invoke(downEvent, displayId)
+            setDisplayId?.invoke(upEvent, displayId)
+            // 设置键盘源
+            downEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
+            upEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
+            // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
+            inject.invoke(im, downEvent, 0)
+            inject.invoke(im, upEvent, 0)
+            Log.i(TAG, "✅ KEYCODE_BACK injected to displayId=$displayId")
+            // 注意：KeyEvent.recycle() 在 API 35 已移除，KeyEvent 较轻量由 GC 回收
+            // （MotionEvent.recycle() 仍保留，因为 MotionEvent 包含 native 指针表）
         } catch (e: Exception) {
             Log.w(TAG, "injectKeyBack failed: ${e.javaClass.simpleName}: ${e.message}")
         }
