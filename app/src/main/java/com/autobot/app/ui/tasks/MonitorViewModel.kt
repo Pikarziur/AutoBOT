@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.autobot.app.manager.AppManager
 import com.autobot.app.manager.ScriptTaskManager
 import com.autobot.app.manager.ShizukuManager
+import com.autobot.app.manager.TaskIsolator
 import com.autobot.app.manager.TaskManager
 import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
