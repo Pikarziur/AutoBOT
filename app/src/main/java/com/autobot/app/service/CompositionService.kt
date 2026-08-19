@@ -337,6 +337,16 @@ class CompositionService(private val context: Context) {
         }
     }
 
+    /** 注入 KEYCODE_BACK 到虚拟显示器（App 返回键 → VD 内 App 返回上一层） */
+    fun injectKeyBack() {
+        val proc = serverProcess ?: return
+        try {
+            VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_KEY_BACK, VDProtocol.EMPTY_PAYLOAD)
+        } catch (e: Exception) {
+            Log.w(TAG, "injectKeyBack: write failed: ${e.message}")
+        }
+    }
+
     fun getFrameBufferBitmap(): Bitmap? = capturer?.getFrameBufferBitmap()
     fun getFrameCount(): Long = capturer?.getFrameCount() ?: 0L
 

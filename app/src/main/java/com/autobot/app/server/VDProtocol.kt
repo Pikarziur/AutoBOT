@@ -50,6 +50,7 @@ object VDProtocol {
     const val MSG_TOUCH_DOWN = 9
     const val MSG_TOUCH_MOVE = 10
     const val MSG_TOUCH_UP = 11
+    const val MSG_KEY_BACK = 12
 
     /** 空 payload（PING/PONG/RELEASE_VD/FRAMES_ACK 等占位） */
     val EMPTY_PAYLOAD = ByteArray(0)

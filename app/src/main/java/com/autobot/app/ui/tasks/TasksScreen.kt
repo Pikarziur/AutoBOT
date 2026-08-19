@@ -215,6 +215,7 @@ fun TasksScreen(
                 vm = vm,
                 displaySize = displaySize,
                 isLandscape = isLandscape,
+                isRunning = isRunning,
                 onExit = { isFullscreen = false },
                 previewContent = {
                     previewContent()
@@ -358,6 +359,7 @@ private fun FullscreenMonitor(
     vm: MonitorViewModel,
     displaySize: Pair<Int, Int>,
     isLandscape: Boolean,
+    isRunning: Boolean,
     onExit: () -> Unit,
     previewContent: @Composable () -> Unit
 ) {
@@ -365,8 +367,13 @@ private fun FullscreenMonitor(
     val view = LocalView.current
     val (bufferWidth, bufferHeight) = displaySize
 
+    // BackHandler 始终启用：运行中时注入 KEYCODE_BACK 到 VD，未运行时退出全屏
     BackHandler(enabled = true) {
-        onExit()
+        if (isRunning) {
+            vm.onBackKey()
+        } else {
+            onExit()
+        }
     }
 
     DisposableEffect(isLandscape) {

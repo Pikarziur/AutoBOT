@@ -582,6 +582,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         compositionService.injectTouchUp(vx, vy)
     }
 
+    /** 注入 KEYCODE_BACK 到 VD，让 VD 内 App 返回上一层 */
+    fun onBackKey() {
+        compositionService.injectKeyBack()
+    }
+
     /**
      * 刷新帧计数（供 UI 定时轮询）
      */
