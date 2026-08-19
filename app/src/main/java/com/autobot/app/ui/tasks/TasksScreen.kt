@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
@@ -75,6 +76,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -231,13 +233,18 @@ fun TasksScreen(
                         }
                     )
 
+                    // 视觉分隔：启动条 vs 任务日志区 - 两个独立组件，留出空白间距
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     // 任务/日志 选项卡区域（淘宝启动条下方）
                     // weight(1f)：占满 70% 业务区扣除启动条之后的剩余高度
+                    // horizontal/bottom padding 让 Card 与屏幕边缘留出间距，强化"独立卡片"视觉感
                     TasksTabsSection(
                         vm = vm,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
+                            .padding(horizontal = 8.dp, bottom = 8.dp)
                     )
                 }
             }
@@ -942,6 +949,14 @@ private fun ModeRadioButtonRow(
  *
  * 脚本文件存储路径：app 内部 filesDir/Mode1_SH/<uuid>_<原文件名>.sh
  *
+ * 下拉框视觉优化（与应用整体设计风格一致）：
+ *   - 圆角 12dp（与项目卡片圆角对齐）
+ *   - 边框：默认 1dp outline 灰；展开时 2dp primary 蓝（视觉反馈）
+ *   - 背景：surface 白；高度 44dp（标准触摸目标）
+ *   - 文字：选中 titleSmall 主色；占位 bodyMedium 灰
+ *   - 下拉箭头：默认灰；展开时 primary 蓝（与边框协调）
+ *   - 列表项：选中项左侧 Check 图标 + primary 文字 + Medium 字重
+ *
  * 实现说明：
  *   - 不使用 ExposedDropdownMenuBox（material3 1.1.x 为 @ExperimentalMaterial3Api）
  *   - 用 Box + Modifier.border + DropdownMenu 等价实现，避免实验性 API
@@ -962,25 +977,39 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
     var expanded by remember { mutableStateOf(false) }
     val selectedTask = scriptTasks.find { it.id == selectedId }
 
+    // 边框/箭头颜色：展开时 primary 蓝（视觉反馈），否则 outline 灰
+    val borderColor = if (expanded) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.outline
+    }
+    val borderWidth = if (expanded) 2.dp else 1.dp
+    val arrowColor = if (expanded) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 8.dp),
+            .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // ---------- 脚本下拉框（占满剩余宽度） ----------
         Box(modifier = Modifier.weight(1f)) {
-            // 输入框样式：圆角描边 + 文本 + 下拉箭头
+            // 输入框样式：圆角 12dp + 描边 + 文本 + 下拉箭头
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .height(44.dp)  // 标准触摸目标高度
+                    .clip(RoundedCornerShape(12.dp))  // 12dp 与项目卡片圆角一致
+                    .background(MaterialTheme.colorScheme.surface)  // 白色背景
                     .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline,
-                        shape = RoundedCornerShape(8.dp)
+                        width = borderWidth,
+                        color = borderColor,
+                        shape = RoundedCornerShape(12.dp)
                     )
                     .clickable { expanded = !expanded }
                     .padding(horizontal = 12.dp),
@@ -990,7 +1019,11 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
                     Text(
                         text = selectedTask?.name ?: "请选择脚本",
                         modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = if (selectedTask != null) {
+                            MaterialTheme.typography.titleSmall  // 选中时更醒目
+                        } else {
+                            MaterialTheme.typography.bodyMedium  // 占位时常规
+                        },
                         color = if (selectedTask != null) {
                             MaterialTheme.colorScheme.onSurface
                         } else {
@@ -999,10 +1032,12 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.width(4.dp))
                     Icon(
                         imageVector = Icons.Filled.ArrowDropDown,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = arrowColor,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
@@ -1014,17 +1049,45 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
             ) {
                 if (scriptTasks.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text("暂无脚本，请点击 + 添加") },
+                        text = {
+                            Text(
+                                text = "暂无脚本，请点击 + 添加",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
                         onClick = { expanded = false }
                     )
                 } else {
                     scriptTasks.forEach { task ->
+                        val isSelected = task.id == selectedId
                         DropdownMenuItem(
-                            text = { Text(task.name) },
+                            text = {
+                                Text(
+                                    text = task.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                                )
+                            },
                             onClick = {
                                 vm.selectScriptTask(task.id)
                                 expanded = false
-                            }
+                            },
+                            leadingIcon = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            } else null
                         )
                     }
                 }
@@ -1042,12 +1105,13 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
                     Log.e("ShAdbModeContent", "OpenDocument launcher failed", e)
                 }
             },
-            modifier = Modifier.size(40.dp)
+            modifier = Modifier.size(44.dp)  // 与下拉框同高，视觉对齐
         ) {
             Icon(
                 imageVector = Icons.Filled.Add,
                 contentDescription = "添加脚本",
-                tint = MaterialTheme.colorScheme.primary
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
             )
         }
 
@@ -1055,7 +1119,7 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
         IconButton(
             onClick = { selectedId?.let { vm.deleteScriptTask(it) } },
             enabled = selectedId != null,
-            modifier = Modifier.size(40.dp)
+            modifier = Modifier.size(44.dp)  // 与下拉框同高
         ) {
             Icon(
                 imageVector = Icons.Filled.Delete,
