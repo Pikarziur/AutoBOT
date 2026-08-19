@@ -137,10 +137,22 @@ fun TasksScreen(
     var taobaoIcon by remember { mutableStateOf<Drawable?>(null) }
     var launching by remember { mutableStateOf(false) }
 
-    // executeMessage 变化时弹 Toast
+    // executeMessage 变化时弹 Toast：
+    //   - 完整错误/详情已经被写入"日志 Tab"（MonitorViewModel.appendLog）
+    //   - Toast 仅作提示：过长内容自动截断到 48 字内 + 引导用户切到『日志』查看完整原因
+    //   - 长度 < 48：直接显示（完整）
+    fun buildToastText(full: String): String {
+        val trimmed = full.trim()
+        return if (trimmed.length <= 48) trimmed
+        else "${trimmed.take(44)}…\n（详情切到『日志』查看，可复制）"
+    }
     LaunchedEffect(executeMessage) {
         executeMessage?.let { msg ->
-            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                buildToastText(msg),
+                Toast.LENGTH_LONG
+            ).show()
             vm.consumeExecuteMessage()
         }
     }
@@ -226,10 +238,33 @@ fun TasksScreen(
                             launching = true
                             scope.launch(Dispatchers.IO) {
                                 try {
-                                    vm.launchAppWithOrientationAdaptation(
+                                    val (ok, msg) = vm.launchAppWithOrientationAdaptation(
                                         context = context,
                                         packageName = AppManager.DEFAULT_PACKAGE_TAOBAO
                                     )
+                                    // ⚠️ 注意：
+                                    //  - 完整 msg（Shizuku 诊断/任务隔离详情/dumpsys 输出等）已经由 VM
+                                    //    通过 appendLog(...) 写入『日志 Tab』，
+                                    //    用户可以在日志里滚动查看 + 用『复制』按钮拷贝完整文本。
+                                    //  - UI 顶部的 Toast 只显示前 48 字的简短版，
+                                    //    过长时会自动提示 "详情切到『日志』查看"。
+                                    //  - 这里只处理崩溃型异常（Exception），返回值走 executeMessage。
+                                    if (!ok) {
+                                        android.util.Log.w(
+                                            "TasksScreen",
+                                            "Launch target app failed: $msg"
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    val crashText = "启动时出现异常：${e::class.java.simpleName} - " +
+                                            (e.message ?: e.stackTraceToString().take(200))
+                                    android.util.Log.e("TasksScreen", "launch crash", e)
+                                    // 把崩溃堆栈也写到『日志 Tab』，方便直接复制
+                                    vm.reportLauncherCrash(crashText + "\n" +
+                                            android.util.Log.getStackTraceString(e))
+                                    // 用短 Toast 提醒，避免顶栏被超长消息压变形
+                                    vm.pushExecuteMessage("启动异常（详情见『日志』）：" +
+                                            (e.message ?: e.javaClass.simpleName))
                                 } finally {
                                     launching = false
                                 }

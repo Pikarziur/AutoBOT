@@ -217,6 +217,31 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * 追加"启动目标 App / VD 控制链路"的日志到【脚本执行日志】流（UI 日志 Tab 可见）。
+     * - 这部分是用户最关心的"淘宝启动为啥失败"；之前用 appendLog 写到 _taskLogs（诊断流，UI 不展示），
+     *   Toast 又被截断 → 用户完全看不到完整错误。
+     * - 现在集中写入 UI 日志 Tab：LazyColumn 任意长度滚动 + 顶部『复制』按钮直接复制全文。
+     * - 线程安全（走 appendScriptLog 的 logLock）。
+     */
+    private fun appendLauncherLog(line: String) = appendScriptLog(line)
+
+    /**
+     * 供 UI 层（TaobaoLauncherRow）在捕获到启动崩溃 Exception 时，
+     * 把完整异常信息追加到『日志 Tab』，方便用户直接复制反馈。
+     */
+    fun reportLauncherCrash(fullText: String) {
+        val stamp = stamp()
+        fullText.lineSequence().forEachIndexed { idx, ln ->
+            appendScriptLog(if (idx == 0) "[$stamp] ✗ $ln" else "[$stamp]   $ln")
+        }
+    }
+
+    /** 供 UI 层临时塞一条 Toast 短提示（不写日志），避免 UI 层直接碰 private _executeMessage */
+    fun pushExecuteMessage(msg: String) {
+        _executeMessage.value = msg
+    }
+
     init {
         // 尝试加载 Native 库
         try {
@@ -258,7 +283,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         _shizukuGranted.value = granted
 
         // 同步写入日志区（用户肉眼可见，避免"为什么明明授权了还报错"的困惑）
-        appendLog("[${stamp()}] Shizuku 诊断：$text (code=$diag)")
+        appendLauncherLog("[${stamp()}] Shizuku 诊断：$text (code=$diag)")
         Log.i(TAG, "refreshShizukuStatus: diag=$diag, granted=$granted")
         return granted
     }
@@ -388,7 +413,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         val needsRelaunch = _vdTargetPackage.value == null
         if (needsRelaunch) {
             _executeMessage.value = "自动启动目标 App (淘宝) 到虚拟显示器，请稍候..."
-            appendLog("[${stamp()}] ⟶ 检测到 VD 前台无目标 App，自动启动到 display=$vdDisplayId")
+            appendLauncherLog("[${stamp()}] ⟶ 检测到 VD 前台无目标 App，自动启动到 display=$vdDisplayId")
         }
 
         _isExecuting.value = true
@@ -405,7 +430,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                     )
                     if (!ok) {
                         _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
-                        appendLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
+                        appendLauncherLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
                         return@launch
                     }
                 }
@@ -484,7 +509,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 val msg = errMsg.ifBlank { "VirtualDisplay launch failed" }
                 Log.e(TAG, msg)
-                appendLog("[${stamp()}] ✗ $msg")
+                appendLauncherLog("[${stamp()}] ✗ $msg")
                 _executeMessage.value = msg
             }
         }
@@ -516,7 +541,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 _isRunning.value = false
                 val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
                 Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed: $msg")
-                appendLog("[${stamp()}] ✗ $msg")
+                appendLauncherLog("[${stamp()}] ✗ $msg")
                 _executeMessage.value = msg
             }
         }
@@ -544,6 +569,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     ): Pair<Boolean, String> {
         if (packageName.isBlank()) {
             val r = false to "未选中有效应用"
+            appendLauncherLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
             _executeMessage.value = r.second; return r
         }
         // Shizuku 校验：先刷新一次状态（解决授权后仍显示未授权的缓存问题）
@@ -552,7 +578,12 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         if (!granted) {
             val diag = ShizukuManager.diagnoseShizuku(context)
             val detail = ShizukuManager.getDiagnosisText(context, diag)
-            val r = false to "Shizuku 未就绪，无法启动虚拟显示器与 App：$detail"
+            // Shizuku 诊断文本通常较长（含 Shizuku 服务状态、uid、权限、授予结果），
+            // Toast 只显示最简短版本，**完整详情写入日志 Tab 方便滚动 + 复制**
+            val longMsg = "Shizuku 未就绪，无法启动虚拟显示器与 App：\n  $detail"
+            val shortMsg = "Shizuku 未就绪：$detail"
+            appendLauncherLog("[${stamp()}] ✗ ${longMsg.replace("\n", "  ")}")
+            val r = false to shortMsg
             _executeMessage.value = r.second; return r
         }
 
@@ -585,6 +616,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             _vdTargetPackage.value = null
             _vdTargetSize.value = null
         }
+        appendLauncherLog("[${stamp()}] ⟶ 启动虚拟显示器 ${targetW}x$targetH 并启动 pkg=$packageName")
         val (surface, errMsg) = compositionService.startVirtualDisplay(targetW, targetH)
         if (errMsg.isBlank()) {
             _displaySize.value = targetW to targetH
@@ -593,7 +625,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             Log.i(TAG, "VD freshly started at ${targetW}x${targetH} for app $packageName")
         } else {
             val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
-            appendLog("[${stamp()}] ✗ $msg")
+            appendLauncherLog("[${stamp()}] ✗ $msg")
             val r = false to msg
             _executeMessage.value = r.second; return r
         }
@@ -611,6 +643,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         val dId = compositionService.displayId
         if (dId <= 0) {
             val r = false to "虚拟显示器未就绪（displayId=-1），请稍后重试"
+            appendLauncherLog("[${stamp()}] ✗ ${r.second}，waited=${waited * 100}ms")
             _executeMessage.value = r.second; return r
         }
 
@@ -622,6 +655,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             //    造成 VD 里只显示 AutoBOT，input 注入落到 AutoBOT 而非目标 App。
             //    这里等待 1.5s 后 dumpsys 找到 display 0 上残留的目标 task，通过 am stack move-task
             //    （Android 10-）或 am task move-task（Android 11+）移回 VD stack，保证 VD 前台=目标 App。
+            appendLauncherLog("[${stamp()}] ⟶ am start --display=$dId 已下发，等待 task 调度稳定后隔离回 VD...")
             val (moved, detail) = com.autobot.app.third.TaskIsolator.isolateToVirtualDisplay(
                 packageName = packageName,
                 vdDisplayId = dId,
@@ -629,15 +663,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 useShizuku = true
             )
             val msg = "已启动到虚拟显示器 (${targetW}x${targetH})" +
-                    if (moved) "，任务隔离完成：$detail" else "，任务隔离跳过：$detail"
+                    if (moved) "，任务隔离完成" else "，任务隔离跳过"
             val success = true to msg
             _executeMessage.value = success.second
-            appendLog("[${stamp()}] ✓ 已启动 pkg=$packageName 到 display=$dId（任务隔离结果：$detail）")
+            appendLauncherLog("[${stamp()}] ✓ 已启动 pkg=$packageName 到 display=$dId（任务隔离结果：$detail）")
             success
         } else {
-            val r = false to "App 启动命令失败，请确认目标应用已安装"
+            val r = false to "App 启动命令失败，请确认目标应用已安装（$packageName）"
             _executeMessage.value = r.second
-            appendLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
+            appendLauncherLog("[${stamp()}] ✗ ${r.second}")
             r
         }
         // 启动/隔离成功后，把目标包名写入 _vdTargetPackage，供 executeShAdbTask 判重 & 注入环境变量
