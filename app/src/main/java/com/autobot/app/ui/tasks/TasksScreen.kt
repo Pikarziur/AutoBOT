@@ -215,7 +215,6 @@ fun TasksScreen(
                 vm = vm,
                 displaySize = displaySize,
                 isLandscape = isLandscape,
-                isRunning = isRunning,
                 onExit = { isFullscreen = false },
                 previewContent = {
                     previewContent()
@@ -274,7 +273,7 @@ private fun VirtualDisplayPreview(
                 .height(cardHeight),
             shape = MaterialTheme.shapes.medium,
             colors = CardDefaults.cardColors(
-                containerColor = Color(0xFFE0E0E0)
+                containerColor = Color(0xFFB6B6B6)
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
@@ -359,7 +358,6 @@ private fun FullscreenMonitor(
     vm: MonitorViewModel,
     displaySize: Pair<Int, Int>,
     isLandscape: Boolean,
-    isRunning: Boolean,
     onExit: () -> Unit,
     previewContent: @Composable () -> Unit
 ) {
@@ -367,13 +365,8 @@ private fun FullscreenMonitor(
     val view = LocalView.current
     val (bufferWidth, bufferHeight) = displaySize
 
-    // BackHandler 始终启用：运行中时注入 KEYCODE_BACK 到 VD，未运行时退出全屏
     BackHandler(enabled = true) {
-        if (isRunning) {
-            vm.onBackKey()
-        } else {
-            onExit()
-        }
+        onExit()
     }
 
     DisposableEffect(isLandscape) {
@@ -418,7 +411,7 @@ private fun FullscreenMonitor(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(Color(0xFFB6B6B6))
     ) {
         BoxWithConstraints(
             modifier = Modifier.fillMaxSize(),

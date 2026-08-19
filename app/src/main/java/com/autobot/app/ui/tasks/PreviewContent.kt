@@ -53,6 +53,7 @@ fun PreviewContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(Color(0xFFB6B6B6))
     ) {
         // 不再在 AndroidView 上加 aspectRatio —— 外层 VirtualDisplayPreview 的 Card
         // 已经通过 BoxWithConstraints + 宽高比计算限定了尺寸，这里 fillMaxSize 即可
@@ -60,8 +61,7 @@ fun PreviewContent(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 SurfaceView(ctx).apply {
-                    // SurfaceView 自身保持透明，让外层 Card 的灰色在未运行时透出
-                    // 运行时帧内容会覆盖 Card 背景，不需要 SurfaceView 自己画背景
+                    // 设置 holder 格式为 RGBA_8888
                     holder.setFormat(PixelFormat.RGBA_8888)
 
                     holder.addCallback(object : SurfaceHolder.Callback {

@@ -297,9 +297,6 @@ object ServerMain {
                         val ev = TouchEvent.fromByteArray(payload)
                         injectMotionEvent(android.view.MotionEvent.ACTION_UP, ev.x, ev.y)
                     }
-                    VDProtocol.MSG_KEY_BACK -> {
-                        injectKeyEvent(android.view.KeyEvent.KEYCODE_BACK)
-                    }
                     VDProtocol.MSG_RELEASE_VD -> {
                         Log.i(TAG, "Received RELEASE_VD, releasing VD and exiting...")
                         releaseAll()
@@ -395,61 +392,6 @@ object ServerMain {
             }
         } catch (e: Exception) {
             Log.w(TAG, "injectMotionEvent failed: ${e.javaClass.simpleName}: ${e.message}")
-        }
-    }
-
-    /**
-     * 使用 IInputManager.injectInputEvent() 反射注入 KeyEvent 到虚拟显示器
-     * （与 injectMotionEvent 共享反射缓存，KEYCODE_BACK 返回键）
-     */
-    private fun injectKeyEvent(keyCode: Int) {
-        val displayId = cachedDisplayId
-        if (displayId < 0) {
-            Log.w(TAG, "injectKeyEvent: displayId=$displayId, skip")
-            return
-        }
-
-        try {
-            // 复用 injectMotionEvent 的反射初始化逻辑
-            if (!inputManagerInited) {
-                inputManagerInited = true
-                try {
-                    val imClass = Class.forName("android.hardware.input.InputManager")
-                    val getInstance = imClass.getDeclaredMethod("getInstance")
-                    getInstance.isAccessible = true
-                    inputManagerInstance = getInstance.invoke(null)
-                    injectMethod = imClass.getMethod("injectInputEvent",
-                        android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
-                    setDisplayIdMethod = android.view.KeyEvent::class.java
-                        .getMethod("setDisplayId", Int::class.javaPrimitiveType)
-                    Log.i(TAG, "✅ IInputManager reflection initialized (key)")
-                } catch (e: Exception) {
-                    Log.e(TAG, "IInputManager reflection init failed", e)
-                }
-            }
-
-            val im = inputManagerInstance ?: return
-            val inject = injectMethod ?: return
-            val setDisplayId = setDisplayIdMethod
-
-            val now = android.os.SystemClock.uptimeMillis()
-            val downEvent = android.view.KeyEvent(now, now,
-                android.view.KeyEvent.ACTION_DOWN, keyCode, 0, 0)
-            val upEvent = android.view.KeyEvent(now, now,
-                android.view.KeyEvent.ACTION_UP, keyCode, 0, 0)
-
-            try {
-                setDisplayId?.invoke(downEvent, displayId)
-                setDisplayId?.invoke(upEvent, displayId)
-                downEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
-                upEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
-                inject.invoke(im, downEvent, 0)
-                inject.invoke(im, upEvent, 0)
-            } finally {
-                // KeyEvent 无 recycle()，无需回收
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "injectKeyEvent failed: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 }
