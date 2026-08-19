@@ -445,6 +445,31 @@ private fun FullscreenMonitor(
                 maxWidthPx to heightFromWidth
             }
 
+            // ===== 诊断日志：测量所有影响居中的尺寸（临时，定位完黑边问题后删除） =====
+            LaunchedEffect(previewW, previewH, maxWidthPx, maxHeightPx) {
+                val dm = context.resources.displayMetrics
+                val activity = context.findActivity()
+                val realScreenH = dm.heightPixels
+                val realScreenW = dm.widthPixels
+                val windowH = activity?.window?.decorView?.height ?: -1
+                val windowW = activity?.window?.decorView?.width ?: -1
+                android.util.Log.i(
+                    "FullscreenDiag",
+                    buildString {
+                        appendLine("=== 全屏黑边诊断 ===")
+                        appendLine("VD buffer       = ${bufferWidth}x${bufferHeight} (ratio=$aspectRatio)")
+                        appendLine("BoxWithConstraints maxWidth x maxHeight = ${maxWidthPx.value} x ${maxHeightPx.value} (Dp)")
+                        appendLine("计算 previewW x previewH = ${previewW.value} x ${previewH.value} (Dp)")
+                        appendLine("density         = ${dm.density}")
+                        appendLine("DisplayMetrics  = ${realScreenW}x${realScreenH}px")
+                        appendLine("decorView size  = ${windowW}x${windowH}px")
+                        appendLine("状态栏 inset    = ${android.view.WindowManagerCompat.getCurrentWindowInsets(activity?.window?.decorView)?.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars())}")
+                        appendLine("导航栏 inset    = ${android.view.WindowManagerCompat.getCurrentWindowInsets(activity?.window?.decorView)?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())}")
+                        // 关键判断：如果 maxWidth/maxHeight != decorView 尺寸，说明还有 inset 占用
+                    }
+                )
+            }
+
             // 实际显示区域：触摸事件在这里处理，保证触摸坐标与画面 1:1 对应
             Box(
                 modifier = Modifier
