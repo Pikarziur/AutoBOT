@@ -18,11 +18,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -33,18 +33,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -77,7 +74,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -239,14 +235,13 @@ fun TasksScreen(
 
                     // 任务/日志 选项卡区域（淘宝启动条下方）
                     // weight(1f)：占满 70% 业务区扣除启动条之后的剩余高度
-                    // start/end/bottom padding 让 Card 与屏幕边缘留出间距，强化"独立卡片"视觉感
-                    // （不能用 horizontal + bottom 混搭，Compose padding 无此重载）
+                    // 仅底部 8dp padding 留间距；左右无 padding，宽度与 TaobaoLauncherRow 完全对齐
                     TasksTabsSection(
                         vm = vm,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                            .padding(bottom = 8.dp)
                     )
                 }
             }
@@ -776,9 +771,8 @@ private fun TasksTabsSection(
         }
     }
 
-    // .sh 文件选择器 Dialog（Shizuku find/cat 路径）
-    // 挂在 TasksTabsSection 末尾，跨 Tab/模式切换均可见，由 vm.shFilePickerVisible 控制
-    ShFilePickerDialog(vm)
+    // 注：.sh 文件选择器 Dialog 已移除（不再通过 Shizuku find/cat 运行时导入）
+    // 脚本来源已改为 app 内部 assets/scripts/ 预置，由 ScriptTaskManager.loadBundledScripts() 启动时自动装载
 }
 
 /**
@@ -786,11 +780,10 @@ private fun TasksTabsSection(
  *
  * 布局自上而下：
  *   1. 模式选择（竖向 RadioButton + 文本，单选交互）
- *      - adb shell
- *      - [SH-ADB 下拉框 + 添加/删除按钮]（仅 SH-ADB 模式下显示，夹在两个 RadioButton 之间）
+ *      - adb shell + [SH-ADB 下拉框]（同一行并排显示，仅 SH-ADB 模式下显示下拉框）
  *      - 截图识别
  *   2. 模式对应内容区（weight(1f) 占满中部空间）
- *      - SH-ADB：无额外内容（下拉框已移至 RadioButton 之间）
+ *      - SH-ADB：无额外内容（下拉框已并排到 adb shell 行右侧）
  *      - 截图识别：占位文本
  *   3. 底部执行任务按钮（跨模式，根据当前模式启用/禁用）
  *
@@ -807,8 +800,9 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 1. 模式选择（竖向 RadioButton） ----------
-        // 布局：adb shell → [SH-ADB 下拉框+按钮] → 截图识别
-        // 下拉框+按钮夹在两个 RadioButton 之间，视觉上归属 adb shell 模式
+        // 布局：
+        //   ○ adb shell  [脚本下拉框▼]   ← 下拉框与 adb shell 同一行并排
+        //   ○ 截图识别
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -819,11 +813,13 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 label = "adb shell",
                 selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
                 onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) }
-            )
-
-            // SH-ADB 模式下：在 adb shell 与 截图识别 之间渲染脚本下拉框 + 添加/删除按钮
-            if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
-                ShAdbModeContent(vm)
+            ) {
+                // SH-ADB 模式下：下拉框与 adb shell 标签并排显示在同一 Row 内
+                // weight(1f)：占满 Row 剩余宽度（RadioButton + 文本之后）
+                if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
+                    Spacer(Modifier.width(12.dp))
+                    ShAdbModeContent(vm, Modifier.weight(1f))
+                }
             }
 
             ModeRadioButtonRow(
@@ -902,13 +898,17 @@ private fun TasksTabContent(vm: MonitorViewModel) {
  * - selected=true ：RadioButton 选中 + 文字主色 onSurface
  * - selected=false：RadioButton 未选 + 文字灰 onSurfaceVariant
  * 始终可点击，单选交互（点未选项即切换到该模式）
+ *
+ * - trailingContent：行尾额外内容（RowScope），用于在 RadioButton+文本右侧并排显示
+ *   其他控件（如 SH-ADB 模式下的脚本下拉框，与 adb shell 标签同一行）
  */
 @Composable
 private fun ModeRadioButtonRow(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    trailingContent: @Composable RowScope.() -> Unit = {}
 ) {
     Row(
         modifier = modifier
@@ -938,18 +938,26 @@ private fun ModeRadioButtonRow(
                 MaterialTheme.colorScheme.onSurfaceVariant
             }
         )
+        // 行尾内容：占用剩余宽度（如 SH-ADB 模式的脚本下拉框）
+        trailingContent()
     }
 }
 
 /**
- * SH-ADB 模式内容
+ * SH-ADB 模式内容（脚本下拉框）
  *
- * 单行布局：[脚本下拉框] [+] [−]
- *   - 下拉框：显示当前选中的脚本任务名（或"请选择脚本"占位）
- *            点击展开 DropdownMenu，列出所有 scriptTasks 供选择
- *            空列表时显示"暂无脚本，请点击 + 添加"
- *   - + 按钮：SAF OpenDocument 选取 .sh 文件 → vm.importScript
- *   - − 按钮：删除当前选中任务（无选中时禁用）
+ * 调用位置：嵌入 [ModeRadioButtonRow] 的 trailingContent 中，与 "adb shell" 标签同一行并排显示
+ *   - modifier 一般传 Modifier.weight(1f) 占满 Row 剩余宽度
+ *
+ * 下拉框行为：
+ *   - 显示当前选中的脚本任务名（或"请选择脚本"占位）
+ *   - 点击展开 DropdownMenu，列出所有 scriptTasks 供选择
+ *   - 空列表时显示"暂无脚本（请在 app/src/main/assets/scripts/ 预置 .sh）"
+ *
+ * ★脚本来源（新策略）★：app 内部 `assets/scripts/` 预置 .sh 文件
+ *   - 由 ScriptTaskManager.loadBundledScripts() 在启动时自动扫描并导入到
+ *     filesDir/Mode1_SH/，统一通过下拉框选择
+ *   - 不再提供运行时 +/− 按钮（脚本由项目打包，不可由用户在 app 内增删）
  *
  * 注：执行按钮位于父级 TasksTabContent 底部（跨模式），本组件不渲染执行入口
  *
@@ -968,7 +976,10 @@ private fun ModeRadioButtonRow(
  *   - 用 Box + Modifier.border + DropdownMenu 等价实现，避免实验性 API
  */
 @Composable
-private fun ShAdbModeContent(vm: MonitorViewModel) {
+private fun ShAdbModeContent(
+    vm: MonitorViewModel,
+    modifier: Modifier = Modifier
+) {
     val scriptTasks by vm.scriptTasks.collectAsStateWithLifecycle()
     val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
 
@@ -992,253 +1003,104 @@ private fun ShAdbModeContent(vm: MonitorViewModel) {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Box(
+        modifier = modifier
+            .padding(horizontal = 4.dp, vertical = 4.dp)
     ) {
-        // ---------- 脚本下拉框（占满剩余宽度） ----------
-        Box(modifier = Modifier.weight(1f)) {
-            // 输入框样式：圆角 12dp + 描边 + 文本 + 下拉箭头
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)  // 标准触摸目标高度
-                    .clip(RoundedCornerShape(12.dp))  // 12dp 与项目卡片圆角一致
-                    .background(MaterialTheme.colorScheme.surface)  // 白色背景
-                    .border(
-                        width = borderWidth,
-                        color = borderColor,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    .clickable { expanded = !expanded }
-                    .padding(horizontal = 12.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = selectedTask?.name ?: "请选择脚本",
-                        modifier = Modifier.weight(1f),
-                        style = if (selectedTask != null) {
-                            MaterialTheme.typography.titleSmall  // 选中时更醒目
-                        } else {
-                            MaterialTheme.typography.bodyMedium  // 占位时常规
-                        },
-                        color = if (selectedTask != null) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Icon(
-                        imageVector = Icons.Filled.ArrowDropDown,
-                        contentDescription = null,
-                        tint = arrowColor,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
+        // 输入框样式：圆角 12dp + 描边 + 文本 + 下拉箭头
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)  // 标准触摸目标高度
+                .clip(RoundedCornerShape(12.dp))  // 12dp 与项目卡片圆角一致
+                .background(MaterialTheme.colorScheme.surface)  // 白色背景
+                .border(
+                    width = borderWidth,
+                    color = borderColor,
+                    shape = RoundedCornerShape(12.dp)
+                )
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = selectedTask?.name ?: "请选择脚本",
+                    modifier = Modifier.weight(1f),
+                    style = if (selectedTask != null) {
+                        MaterialTheme.typography.titleSmall  // 选中时更醒目
+                    } else {
+                        MaterialTheme.typography.bodyMedium  // 占位时常规
+                    },
+                    color = if (selectedTask != null) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = arrowColor,
+                    modifier = Modifier.size(24.dp)
+                )
             }
+        }
 
-            // 下拉弹出菜单（位置由框架自动计算，默认在锚点 Box 下方）
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                if (scriptTasks.isEmpty()) {
+        // 下拉弹出菜单（位置由框架自动计算，默认在锚点 Box 下方）
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            if (scriptTasks.isEmpty()) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "暂无脚本（请在 app/src/main/assets/scripts/ 预置 .sh）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    onClick = { expanded = false }
+                )
+            } else {
+                scriptTasks.forEach { task ->
+                    val isSelected = task.id == selectedId
                     DropdownMenuItem(
                         text = {
                             Text(
-                                text = "暂无脚本，请点击 + 添加",
+                                text = task.name,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
                             )
                         },
-                        onClick = { expanded = false }
-                    )
-                } else {
-                    scriptTasks.forEach { task ->
-                        val isSelected = task.id == selectedId
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = task.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isSelected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                        onClick = {
+                            vm.selectScriptTask(task.id)
+                            expanded = false
+                        },
+                        leadingIcon = if (isSelected) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
                                 )
-                            },
-                            onClick = {
-                                vm.selectScriptTask(task.id)
-                                expanded = false
-                            },
-                            leadingIcon = if (isSelected) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Filled.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            } else null
-                        )
-                    }
+                            }
+                        } else null
+                    )
                 }
             }
-        }
-
-        // ---------- 添加按钮（Shizuku find 列出 .sh 文件，弹 Dialog 选）----------
-        IconButton(
-            onClick = { vm.showShFilePicker() },
-            modifier = Modifier.size(44.dp)  // 与下拉框同高，视觉对齐
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = "添加脚本",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-
-        // ---------- 删除按钮（仅当有选中任务时启用） ----------
-        IconButton(
-            onClick = { selectedId?.let { vm.deleteScriptTask(it) } },
-            enabled = selectedId != null,
-            modifier = Modifier.size(44.dp)  // 与下拉框同高
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Delete,
-                contentDescription = "删除脚本",
-                tint = if (selectedId != null) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
-            )
         }
     }
-}
-
-/**
- * .sh 文件选择器 Dialog（Shizuku find/cat 路径，绕开 SAF）
- *
- * 调用方：[ShAdbModeContent] 的 + 按钮触发 `vm.showShFilePicker()` → 本 Dialog 出现
- *
- * 三种状态：
- *   - 加载中（vm.isListingShFiles）：CircularProgressIndicator + "扫描 .sh 文件中..."
- *   - 空列表：空状态文本"未找到 .sh 文件，请先 push 到 /sdcard/"
- *   - 列表非空：LazyColumn 列出所有路径，点击触发 vm.importScriptFromPath(path)
- *
- * 列表项布局：上方文件名（高亮主色 + Medium 字重）+ 下方完整路径（灰色辅助）
- *
- * 注：Dialog 渲染在独立 window，挂在 [TasksTabsSection] 末尾，跨 Tab/模式切换均可见
- */
-@Composable
-private fun ShFilePickerDialog(vm: MonitorViewModel) {
-    val visible by vm.shFilePickerVisible.collectAsStateWithLifecycle()
-    val isListing by vm.isListingShFiles.collectAsStateWithLifecycle()
-    val fileList by vm.shFileList.collectAsStateWithLifecycle()
-
-    if (!visible) return
-
-    AlertDialog(
-        onDismissRequest = { vm.hideShFilePicker() },
-        title = { Text("选择 .sh 文件") },
-        text = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp)
-            ) {
-                when {
-                    // 1. 加载中：find 命令在 IO 线程执行
-                    isListing -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(modifier = Modifier.size(28.dp))
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = "扫描 .sh 文件中...",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                    // 2. 空列表：find 命令没找到任何 .sh 文件
-                    fileList.isEmpty() -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "未找到 .sh 文件\n请先 push 到 /sdcard/",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                    // 3. 列表非空：渲染可点击路径列表
-                    else -> {
-                        LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                            items(fileList) { path ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { vm.importScriptFromPath(path) }
-                                        .padding(horizontal = 8.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        // 上：文件名（去掉路径），高亮主色
-                                        Text(
-                                            text = path.substringAfterLast('/'),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Spacer(Modifier.height(2.dp))
-                                        // 下：完整路径，灰色辅助
-                                        Text(
-                                            text = path,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { vm.hideShFilePicker() }) {
-                Text("取消")
-            }
-        }
-    )
 }
 
 /**

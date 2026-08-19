@@ -2,7 +2,6 @@ package com.autobot.app.ui.tasks
 
 import android.app.Application
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
@@ -15,7 +14,6 @@ import com.autobot.app.model.TaskStatus
 import com.autobot.app.model.TaskType
 import com.autobot.app.nativelib.NativeCapturer
 import com.autobot.app.service.CompositionService
-import com.autobot.app.util.ShellExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -149,20 +147,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _scriptLogs = MutableStateFlow<List<String>>(emptyList())
     val scriptLogs: StateFlow<List<String>> = _scriptLogs.asStateFlow()
 
-    // ==================== .sh 文件选择器（Shizuku find/cat，绕开 SAF）====================
-
-    /** .sh 文件选择器是否可见（受 + 按钮 onClick → showShFilePicker() 控制） */
-    private val _shFilePickerVisible = MutableStateFlow(false)
-    val shFilePickerVisible: StateFlow<Boolean> = _shFilePickerVisible.asStateFlow()
-
-    /** find 命令扫到的 .sh 文件路径列表 */
-    private val _shFileList = MutableStateFlow<List<String>>(emptyList())
-    val shFileList: StateFlow<List<String>> = _shFileList.asStateFlow()
-
-    /** 是否正在扫描 .sh 文件（控制 Dialog 内的 CircularProgressIndicator） */
-    private val _isListingShFiles = MutableStateFlow(false)
-    val isListingShFiles: StateFlow<Boolean> = _isListingShFiles.asStateFlow()
-
+    // 注：.sh 文件选择器相关 state（shFilePickerVisible / shFileList / isListingShFiles）已移除
+    // 脚本来源改为 app 内部 assets/scripts/ 预置，不再需要运行时扫描 /sdcard
     private val logLock = Any()
     private val logSdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
@@ -289,165 +275,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         _selectedScriptTaskId.value = id
     }
 
-    /**
-     * 导入 SH 脚本文件（从 SAF Uri 读取并存储到 app 内部）
-     * @param uri SAF 返回的文件 Uri
-     * @return 成功返回 true
-     */
-    fun importScript(uri: Uri): Boolean {
-        val task = ScriptTaskManager.importScript(uri) ?: run {
-            _executeMessage.value = "导入脚本失败"
-            return false
-        }
-        refreshScriptTasks()
-        // 自动选中刚导入的任务
-        _selectedScriptTaskId.value = task.id
-        _executeMessage.value = "已导入：${task.name}"
-        return true
-    }
-
-    /**
-     * 删除指定的 SH 脚本任务
-     */
-    fun deleteScriptTask(id: String) {
-        ScriptTaskManager.deleteTask(id)
-        refreshScriptTasks()
-        if (_selectedScriptTaskId.value == id) {
-            _selectedScriptTaskId.value = null
-        }
-        _executeMessage.value = "已删除任务"
-    }
-
-    // ==================== Shizuku find/cat .sh 文件导入路径 ====================
-
-    /**
-     * 显示 .sh 文件选择器：通过 Shizuku 执行 `find` 列出 /sdcard 下所有 .sh 文件
-     *
-     * 与 SAF 弹系统文件选择器不同，Shizuku 走 shell uid 直接 `find`，
-     * **不经过"安全浏览"过滤层**，能列出让 SAF 看不到的 .sh 文件。
-     *
-     * 前置：Shizuku 已授权。未授权时设置错误消息，不打开 Dialog。
-     *
-     * 实现要点：
-     *   - `find /sdcard -maxdepth 4 -name '*.sh' -type f 2>/dev/null`
-     *     -maxdepth 4：限制递归深度，避免全盘扫描卡顿
-     *     2>/dev/null：忽略 Permission denied 等无权访问的目录
-     *   - 扫描在 IO 线程执行（避免阻塞 UI），结果写入 [_shFileList]
-     *   - Dialog 立即弹出，加载中显示 CircularProgressIndicator
-     */
-    fun showShFilePicker() {
-        // Shizuku 未授权直接拒绝，提示用户去设置授权
-        if (!ShizukuManager.isShizukuGranted()) {
-            _executeMessage.value = "Shizuku 未授权，无法扫描文件"
-            return
-        }
-        _shFilePickerVisible.value = true
-        _isListingShFiles.value = true
-        _shFileList.value = emptyList()
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // -iname：不区分大小写（匹配 .sh / .SH / .Sh）
-                // -maxdepth 6：放宽递归深度，覆盖 /sdcard/a/b/c/d/e/x.sh 等
-                // 不用 2>/dev/null：让 Permission denied 等错误浮到 stderr，便于诊断
-                //   （ShellExecutor 用 sh -c 执行，stderr 会被捕获并显示给用户）
-                val result = ShellExecutor.execute(
-                    "find /sdcard -maxdepth 6 -iname '*.sh' -type f",
-                    useShizuku = true,
-                    timeout = 20_000
-                )
-                if (result.isSuccess) {
-                    val paths = result.stdout
-                        .trim()
-                        .split("\n")
-                        .filter { it.isNotEmpty() }
-                    _shFileList.value = paths
-                    if (paths.isEmpty()) {
-                        // 把 stderr 也带上，方便用户判断是"真没文件"还是"权限拒绝导致扫描为空"
-                        val diag = if (result.stderr.isNotBlank()) {
-                            "（stderr: ${result.stderr.take(120)}）"
-                        } else ""
-                        _executeMessage.value = "未找到 .sh 文件，请先 push 到 /sdcard/$diag"
-                    }
-                } else {
-                    _executeMessage.value = "扫描 .sh 文件失败：${result.stderr.ifBlank { "exit=${result.exitCode}" }}"
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "showShFilePicker: find failed", e)
-                _executeMessage.value = "扫描 .sh 文件异常：${e.message}"
-            } finally {
-                _isListingShFiles.value = false
-            }
-        }
-    }
-
-    /** 关闭 .sh 文件选择器（用户点取消 / 点外部 / 导入成功后调用） */
-    fun hideShFilePicker() {
-        _shFilePickerVisible.value = false
-    }
-
-    /**
-     * 通过 Shizuku `cat` 读取指定路径的 .sh 文件，导入到 app 内部存储
-     *
-     * 流程：
-     *   1. Shizuku `cat '<path>'` 读出文件内容（绕开 SAF / 安全浏览）
-     *   2. [ScriptTaskManager.importScriptFromContent] 落盘到 filesDir/Mode1_SH/
-     *   3. 刷新任务列表并自动选中新导入的任务
-     *   4. 关闭文件选择器
-     *
-     * 路径安全：用单引号包裹 + 转义内部单引号，防 shell 注入。
-     *
-     * @param path .sh 文件在 /sdcard 下的绝对路径（来自 [shFileList]）
-     */
-    fun importScriptFromPath(path: String) {
-        if (!ShizukuManager.isShizukuGranted()) {
-            _executeMessage.value = "Shizuku 未授权，无法读取文件"
-            return
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // 单引号包裹路径 + 转义内部单引号，防 shell 注入
-                val safePath = path.replace("'", "'\\''")
-                val result = ShellExecutor.execute(
-                    "cat '$safePath'",
-                    useShizuku = true,
-                    timeout = 10_000
-                )
-                if (!result.isSuccess) {
-                    _executeMessage.value = "读取文件失败：${result.stderr.ifBlank { "exit=${result.exitCode}" }}"
-                    return@launch
-                }
-                val content = result.stdout
-                if (content.isEmpty()) {
-                    _executeMessage.value = "文件内容为空：$path"
-                    return@launch
-                }
-
-                // 取末尾段作为 originalName（含 .sh 扩展名）
-                val originalName = path.substringAfterLast('/').ifBlank { "imported.sh" }
-                val displayName = originalName.removeSuffix(".sh")
-
-                val task = ScriptTaskManager.importScriptFromContent(
-                    name = displayName,
-                    content = content,
-                    originalName = originalName
-                )
-                if (task == null) {
-                    _executeMessage.value = "导入失败：$originalName"
-                    return@launch
-                }
-                refreshScriptTasks()
-                _selectedScriptTaskId.value = task.id
-                _executeMessage.value = "已导入：${task.name}"
-                // 导入成功后关闭 Dialog
-                _shFilePickerVisible.value = false
-            } catch (e: Exception) {
-                Log.e(TAG, "importScriptFromPath failed", e)
-                _executeMessage.value = "导入异常：${e.message}"
-            }
-        }
-    }
+    // 注：importScript / deleteScriptTask / showShFilePicker / hideShFilePicker / importScriptFromPath
+    // 已全部移除（脚本来源改为 app 内部 assets/scripts/ 预置，由 ScriptTaskManager.loadBundledScripts() 启动时装载）
 
     /**
      * 消费执行消息（UI 显示后调用，清空避免重复显示）
