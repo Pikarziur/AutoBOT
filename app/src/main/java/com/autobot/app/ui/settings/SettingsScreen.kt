@@ -15,15 +15,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -118,6 +119,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
 /**
  * Shizuku 状态卡片（InfoCard 样式：0 阴影 12dp 圆角 16dp 内边距）
+ *
+ * 布局：
+ *   Row(SpaceBetween)
+ *     ├ 左侧：状态文字（灰色/红色）
+ *     └ 右侧：Material3 Switch（已授权=开，未授权=关）
+ *   Row(SpaceBetween)
+ *     ├ 左侧："启动 Shizuku" 文本
+ *     └ 右侧：蓝色 "打开" TextButton
  */
 @Composable
 private fun ShizukuCard(
@@ -125,6 +134,9 @@ private fun ShizukuCard(
     onAuthorizeClick: () -> Unit,
     onOpenShizukuClick: () -> Unit
 ) {
+    // 开关状态：OK 时为 true，其余状态为 false
+    val isAuthorized = diagnosis == ShizukuManager.ShizukuDiagnosis.OK
+
     val (statusText, isError) = when (diagnosis) {
         ShizukuManager.ShizukuDiagnosis.OK -> "Shizuku 已授权" to false
         ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED -> "Shizuku 未安装" to true
@@ -146,37 +158,47 @@ private fun ShizukuCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 状态文字：灰色 13sp，错误时红色
-            Text(
-                text = statusText,
-                fontSize = 13.sp,
-                color = if (isError) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // 授权按钮：蓝色填充
-            Button(
-                onClick = onAuthorizeClick,
+            // 第一行：状态文字 + Switch
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = "授权")
+                Text(
+                    text = statusText,
+                    fontSize = 13.sp,
+                    color = if (isError) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = isAuthorized,
+                    onCheckedChange = { onAuthorizeClick() },
+                    colors = SwitchDefaults.colors(
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                )
             }
 
-            // 打开 Shizuku App 按钮：描边样式
-            OutlinedButton(
-                onClick = onOpenShizukuClick,
+            // 第二行：启动 Shizuku 文本 + 蓝色"打开"文本按钮
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.primary
-                )
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = "打开 Shizuku App")
+                Text(
+                    text = "启动 Shizuku",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                TextButton(onClick = onOpenShizukuClick) {
+                    Text(
+                        text = "打开",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
     }
