@@ -306,12 +306,8 @@ fun TasksScreen(
             )
         }
 
-        // ★ 浮动停止按钮：任务执行时悬浮在页面最上层（仅小窗模式）
-        // 红色圆形 + 白色正方形 + 投影，出现在右下角；点击停止任务后恢复原样
-        FloatingStopButton(
-            visible = isExecuting && !isFullscreen,
-            onClick = { vm.stopExecuting() }
-        )
+        // ★ 浮动停止按钮已移至 TasksTabContent 内部
+        // （isExecuting 状态只在 TasksTabContent 作用域内可访问，外层 TasksScreen 拿不到）
     }
 }
 
@@ -925,7 +921,9 @@ private fun TasksTabContent(vm: MonitorViewModel) {
     // 当前选中任务文件对象（null 表示未选中）
     val selectedTaskFile = taskFiles.firstOrNull { it.id == selectedTaskFileId }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // Box 包裹：让 FloatingStopButton 可以悬浮在所有内容之上（z-order 最高）
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 1. 任务下拉列表 ----------
         // 样式与应用整体下拉框一致：12dp 圆角 + 1dp 描边 + 44dp 高 + 白底
         // 展开时描边变为主色蓝（2dp）+ 文字变主色，引导"已激活可选项"
@@ -1105,7 +1103,15 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 }
             }
         }
-    }
+        } // Column 结束
+
+        // ★ 浮动停止按钮：任务执行时悬浮在页面最上层
+        // 红色圆形 + 白色正方形 + 投影，出现在右下角；点击停止任务后恢复原样
+        FloatingStopButton(
+            visible = isExecuting,
+            onClick = { vm.stopExecuting() }
+        )
+    } // Box 结束
 }
 
 /**

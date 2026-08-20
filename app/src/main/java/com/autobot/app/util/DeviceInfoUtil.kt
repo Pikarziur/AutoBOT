@@ -45,9 +45,9 @@ object DeviceInfoUtil {
     fun getAppVersionName(context: Context): String {
         return try {
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            packageInfo.versionName ?: "0.02"
+            packageInfo.versionName ?: "0.03"
         } catch (e: Exception) {
-            "0.02"
+            "0.03"
         }
     }
 
