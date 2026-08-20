@@ -16,8 +16,8 @@ import rikka.shizuku.Shizuku
 /**
  * 虚拟显示器分辨率模式（仿 MAA-Meow 的 720P / 1080P 两档）
  *
- *   VD_720P  → 720 × 1280，DPI=320（竖屏，默认档，省内存 + 预览更流畅）
- *   VD_1080P → 1080 × 1920，DPI=420（竖屏，小控件/OCR 更清晰）
+ *   VD_720P  → 720 × 1280，DPI=320（竖屏，省内存 + 预览更流畅）
+ *   VD_1080P → 1080 × 1920，DPI=420（竖屏，默认档，小控件/OCR 更清晰）
  *
  * 数据三重冗余：
  *   枚举名         → SharedPreferences 持久化
@@ -37,8 +37,8 @@ enum class VdResolutionMode(
         const val PREFS_NAME = "autobot_settings"
         const val KEY_VD_RESOLUTION = "vd_resolution_mode"
 
-        /** 默认模式：720P，与 MAA-Meow 默认一致 */
-        val DEFAULT = VD_720P
+        /** 默认模式：1080P，保证小控件/OCR 清晰度 */
+        val DEFAULT = VD_1080P
 
         /** 从共享参数读取，找不到 / 非法值 一律回落 DEFAULT，保证任何版本启动不会崩 */
         fun readFromPrefs(ctx: Context): VdResolutionMode = runCatching {
@@ -64,7 +64,7 @@ enum class VdResolutionMode(
  *  - 注册 / 注销 Shizuku 权限结果监听器（v13+ 要求显式注册才能收到回调）
  *  - 处理授权点击分支逻辑（未安装 / 未连接 / 未授权 / 已授权 / 异常）
  *  - 通过 toast SharedFlow 通知 UI 显示 Toast（ViewModel 不直接 Toast，避免持有 Activity context）
- *  - 管理持久化设置项：vdResolutionMode（VD 分辨率 720P/1080P，默认 720P）
+ *  - 管理持久化设置项：vdResolutionMode（VD 分辨率 720P/1080P，默认 1080P）
  *
  * 生命周期：viewModel() 绑定到 Activity，切换 Tab 不重建，
  *           因此 Shizuku 监听器在整个 Activity 生命周期内有效。

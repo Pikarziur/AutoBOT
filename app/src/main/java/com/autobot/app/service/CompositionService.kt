@@ -73,7 +73,7 @@ class CompositionService(private val context: Context) {
         private const val TAG = "CompositionSvc"
 
         /**
-         * 分辨率预设（仿 MAA-Meow：720P 默认、1080P 高配）
+         * 分辨率预设（默认 1080P，可选 720P 省内存档）
          *
          * 真实尺寸与密度都委托给枚举 VdResolutionMode 单点定义，
          * 保证"设置页 → MonitorViewModel → ShellExecutor"都读到同一组值。
@@ -85,7 +85,7 @@ class CompositionService(private val context: Context) {
         @Deprecated("请改用 VdResolutionMode.resolveCurrent(context).dpi")
         const val DEFAULT_DPI = 240
 
-        /** 读取当前生效的 VD 档位：SharedPreferences > 默认 720P。Service/VM/UI 通用。 */
+        /** 读取当前生效的 VD 档位：SharedPreferences > 默认 1080P。Service/VM/UI 通用。 */
         @JvmStatic
         fun resolveMode(ctx: Context): VdResolutionMode = VdResolutionMode.readFromPrefs(ctx)
 

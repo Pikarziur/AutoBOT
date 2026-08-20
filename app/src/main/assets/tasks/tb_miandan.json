@@ -1,0 +1,23 @@
+{
+  "name": "tb_miandan",
+  "description": "淘宝免单任务：15组随机滑动，每组4种滑动（快速/慢速上滑 + 左上/右上圆弧）组内随机排序，组间3-5秒随机延迟。坐标在 VD 宽10%-90%、高25%-90%范围内随机生成。",
+  "program": {
+    "groups": 15,
+    "delayMinMs": 3000,
+    "delayMaxMs": 5000,
+    "coordRange": {
+      "xMinRatio": 0.1,
+      "yMinRatio": 0.25,
+      "xMaxRatio": 0.9,
+      "yMaxRatio": 0.9
+    },
+    "shuffleGroup": true,
+    "delayBetweenActions": true,
+    "actions": [
+      { "type": "swipe_up_fast",      "durationMs": 300, "label": "快速上滑" },
+      { "type": "swipe_up_slow",      "durationMs": 700, "label": "慢速上滑" },
+      { "type": "arc_swipe_left_up",  "durationMs": 400, "label": "圆弧左上滑" },
+      { "type": "arc_swipe_right_up", "durationMs": 400, "label": "圆弧右上滑" }
+    ]
+  }
+}

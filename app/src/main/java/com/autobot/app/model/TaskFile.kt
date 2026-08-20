@@ -8,18 +8,21 @@ import java.util.UUID
  * 任务文件数据模型
  *
  * 一个 TaskFile = 一个独立的 JSON 任务文件（filesDir/tasks/<name>.json），
- * 描述一组在虚拟显示器（VD）上要顺序执行的 MotionEvent 动作。
+ * 描述一组在虚拟显示器（VD）上要执行的 MotionEvent 动作。
+ *
+ * 支持两种模式：
+ *   1. 静态模式（actions）：顺序执行的固定动作列表（坐标写死，适合精确点击）
+ *   2. 程序化模式（program）：循环 + 随机 + 分组的动态任务（适合刷量类任务）
  *
  * 整套体系与 MAA-Meow 一致：不再走 adb shell / `input tap`，而是由
  * [com.autobot.app.manager.TaskExecutor] 在 App 进程内通过 CompositionService
  * 把动作下发到 server 进程，server 用 IInputManager.injectInputEvent + setDisplayId
  * 直接注入 MotionEvent 到虚拟显示器。
  *
- * 任务文件 JSON 结构示例（test.json）：
+ * 静态任务 JSON 结构示例（test.json）：
  * ```
  * {
  *   "name": "test",
- *   "description": "占位测试任务",
  *   "actions": [
  *     { "type": "tap",    "x": 500, "y": 500 },
  *     { "type": "wait",   "ms": 5000 },
@@ -30,7 +33,29 @@ import java.util.UUID
  * }
  * ```
  *
- * 支持的 action 类型见 [TaskActionType]。
+ * 程序化任务 JSON 结构示例（tb_miandan.json）：
+ * ```
+ * {
+ *   "name": "tb_miandan",
+ *   "program": {
+ *     "groups": 15,
+ *     "delayMinMs": 3000,
+ *     "delayMaxMs": 5000,
+ *     "coordRange": { "xMinRatio": 0.1, "yMinRatio": 0.25,
+ *                     "xMaxRatio": 0.9, "yMaxRatio": 0.9 },
+ *     "shuffleGroup": true,
+ *     "delayBetweenActions": true,
+ *     "actions": [
+ *       { "type": "swipe_up_fast",     "durationMs": 300, "label": "快速上滑" },
+ *       { "type": "swipe_up_slow",     "durationMs": 700, "label": "慢速上滑" },
+ *       { "type": "arc_swipe_left_up", "durationMs": 400, "label": "圆弧左上滑" },
+ *       { "type": "arc_swipe_right_up","durationMs": 400, "label": "圆弧右上滑" }
+ *     ]
+ *   }
+ * }
+ * ```
+ *
+ * program.actions 支持的 type 见 [ProgramActionType]。
  */
 data class TaskFile(
     /** 任务 ID：来自文件名（不带扩展名），稳定可读 */
@@ -41,12 +66,17 @@ data class TaskFile(
     val description: String,
     /** 任务文件绝对路径（filesDir/tasks/<id>.json），用于编辑/删除 */
     val filePath: String,
-    /** 顺序执行的 action 列表 */
-    val actions: List<TaskAction>
+    /** 静态模式：顺序执行的 action 列表（与 program 互斥，program 优先） */
+    val actions: List<TaskAction> = emptyList(),
+    /** 程序化模式：循环 + 随机 + 分组任务（存在则优先于 actions） */
+    val program: ProgramTask? = null
 ) {
     companion object {
         /**
          * 从 JSON 字符串解析任务文件
+         *
+         * 优先解析 program（程序化任务）；若无 program，再解析 actions（静态任务）。
+         * 两者都没有则返回 null。
          *
          * @param json       文件完整内容
          * @param id         任务 ID（一般取文件名去掉 .json）
@@ -58,6 +88,20 @@ data class TaskFile(
                 val root = JSONObject(json)
                 val name = root.optString("name", id).ifBlank { id }
                 val description = root.optString("description", "")
+
+                // 优先程序化任务
+                val programObj = root.optJSONObject("program")
+                if (programObj != null) {
+                    val program = ProgramTask.fromJson(programObj)
+                    if (program != null) {
+                        return TaskFile(
+                            id = id, name = name, description = description,
+                            filePath = filePath, program = program
+                        )
+                    }
+                }
+
+                // 回退静态 actions
                 val arr: JSONArray = root.optJSONArray("actions") ?: return null
                 val actions = mutableListOf<TaskAction>()
                 for (i in 0 until arr.length()) {
@@ -67,15 +111,117 @@ data class TaskFile(
                 }
                 if (actions.isEmpty()) return null
                 TaskFile(
-                    id = id,
-                    name = name,
-                    description = description,
-                    filePath = filePath,
-                    actions = actions
+                    id = id, name = name, description = description,
+                    filePath = filePath, actions = actions
                 )
             } catch (e: Exception) {
                 null
             }
+        }
+    }
+}
+
+/**
+ * 程序化任务配置（循环 + 随机 + 分组）
+ *
+ * 执行语义（由 [com.autobot.app.manager.TaskExecutor.executeProgram] 实现）：
+ *   1. 外层循环 [groups] 次，每次为"一组"
+ *   2. 每组从 [actions] 复制一份，若 [shuffleGroup] 则组内随机排序
+ *   3. 组内逐个执行 [ProgramAction]，坐标按 [coordRange] 随机生成
+ *   4. 每个动作之间若 [delayBetweenActions]，随机等待 [delayMinMs]~[delayMaxMs]
+ */
+data class ProgramTask(
+    /** 循环组数（一组 = actions 列表执行一遍） */
+    val groups: Int = 1,
+    /** 动作间随机延迟下限（毫秒） */
+    val delayMinMs: Long = 3000L,
+    /** 动作间随机延迟上限（毫秒） */
+    val delayMaxMs: Long = 5000L,
+    /** 坐标随机范围（比例值 0~1，运行时按 VD 宽高换算成像素） */
+    val coordRange: CoordRange = CoordRange(),
+    /** 组内动作是否随机排序 */
+    val shuffleGroup: Boolean = true,
+    /** 动作之间是否插入随机延迟 */
+    val delayBetweenActions: Boolean = true,
+    /** 组内动作模板（4 种滑动等） */
+    val actions: List<ProgramAction> = emptyList()
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ProgramTask? {
+            val actionsArr = o.optJSONArray("actions") ?: return null
+            val actions = mutableListOf<ProgramAction>()
+            for (i in 0 until actionsArr.length()) {
+                ProgramAction.fromJson(actionsArr.getJSONObject(i))?.let { actions.add(it) }
+            }
+            if (actions.isEmpty()) return null
+            val rangeObj = o.optJSONObject("coordRange")
+            val range = rangeObj?.let { CoordRange.fromJson(it) } ?: CoordRange()
+            return ProgramTask(
+                groups = o.optInt("groups", 1).coerceAtLeast(1),
+                delayMinMs = o.optLong("delayMinMs", 3000L),
+                delayMaxMs = o.optLong("delayMaxMs", 5000L),
+                coordRange = range,
+                shuffleGroup = o.optBoolean("shuffleGroup", true),
+                delayBetweenActions = o.optBoolean("delayBetweenActions", true),
+                actions = actions
+            )
+        }
+    }
+}
+
+/** 坐标随机范围（比例值，0~1） */
+data class CoordRange(
+    val xMinRatio: Double = 0.1,
+    val yMinRatio: Double = 0.25,
+    val xMaxRatio: Double = 0.9,
+    val yMaxRatio: Double = 0.9
+) {
+    companion object {
+        fun fromJson(o: JSONObject) = CoordRange(
+            xMinRatio = o.optDouble("xMinRatio", 0.1),
+            yMinRatio = o.optDouble("yMinRatio", 0.25),
+            xMaxRatio = o.optDouble("xMaxRatio", 0.9),
+            yMaxRatio = o.optDouble("yMaxRatio", 0.9)
+        )
+    }
+}
+
+/**
+ * 程序化任务动作类型
+ *
+ * 坐标在运行时按 [CoordRange] 随机生成，这里只定义"动作形态 + 时长"。
+ * - SWIPE_UP_FAST/SLOW：直线向上滑动（页面下移），起点在下、终点在上
+ * - ARC_SWIPE_LEFT_UP：从右下到左上的圆弧（左凸）
+ * - ARC_SWIPE_RIGHT_UP：从左下到右上的圆弧（右凸）
+ */
+enum class ProgramActionType {
+    SWIPE_UP_FAST,
+    SWIPE_UP_SLOW,
+    ARC_SWIPE_LEFT_UP,
+    ARC_SWIPE_RIGHT_UP;
+
+    companion object {
+        fun fromString(s: String?): ProgramActionType? {
+            if (s.isNullOrBlank()) return null
+            return ProgramActionType.values().firstOrNull { it.name.equals(s, ignoreCase = true) }
+        }
+    }
+}
+
+/** 程序化任务的单个动作模板 */
+data class ProgramAction(
+    val type: ProgramActionType,
+    val durationMs: Long,
+    val label: String = ""
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ProgramAction? {
+            val type = ProgramActionType.fromString(o.optString("type")) ?: return null
+            return ProgramAction(
+                type = type,
+                durationMs = o.optLong("durationMs", 300L),
+                label = o.optString("label", "")
+            )
         }
     }
 }
