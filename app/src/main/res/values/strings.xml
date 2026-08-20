@@ -9,7 +9,4 @@
     <string name="shizuku_authorized">已授权</string>
     <string name="shizuku_unauthorized">未授权</string>
     <string name="shizuku_not_installed">Shizuku未安装</string>
-    <string name="settings_shizuku">Shizuku 授权</string>
-    <string name="shizuku_authorize">授权</string>
-    <string name="shizuku_open_app">打开 Shizuku App</string>
 </resources>

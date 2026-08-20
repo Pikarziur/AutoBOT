@@ -11,22 +11,13 @@
     <color name="black">#FF000000</color>
     <color name="text_primary">#FF1C1B18</color>
     <color name="text_secondary">#FF8A8580</color>
-    <color name="text_hint">#FFC9C4BE</color>
 
     <!-- 强调蓝：着重提醒、显著文字、按钮 -->
     <color name="primary">#FF2B6BCA</color>
-    <color name="primary_dark">#FF1E55A8</color>
     <color name="primary_light">#FFE5F1FF</color>
     <color name="accent">#FF2B6BCA</color>
 
     <!-- 报错红：停止、关闭、错误信息 -->
     <color name="error">#FFF53F3F</color>
 
-    <!-- 成功绿（运行中状态） -->
-    <color name="success">#FF4CAF50</color>
-    <!-- 警告橙（未启动状态） -->
-    <color name="warning">#FFFF9800</color>
-
-    <!-- 分割线/边框 -->
-    <color name="outline">#FFC9C4BE</color>
 </resources>

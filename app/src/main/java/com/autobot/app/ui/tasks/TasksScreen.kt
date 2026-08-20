@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -259,58 +260,6 @@ fun TasksScreen(
                     previewContent()
                 }
             )
-        }
-    }
-}
-
-/** */
-@Composable
-private fun FloatingStopButton(
-    visible: Boolean,
-    onClick: () -> Unit
-) {
-    val scale by animateFloatAsState(
-        targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
-        label = "fabScale"
-    )
-    val alpha by animateFloatAsState(
-        targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = 300),
-        label = "fabAlpha"
-    )
-
-    if (scale > 0.01f) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(end = 20.dp, bottom = 100.dp),
-            contentAlignment = Alignment.BottomEnd
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .alpha(alpha)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                    }
-                    .shadow(
-                        elevation = 8.dp,
-                        shape = CircleShape,
-                        clip = false
-                    )
-                    .clip(CircleShape)
-                    .background(Color(0xFFFF3B30))
-                    .clickable(onClick = onClick),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .background(Color.White)
-                )
-            }
         }
     }
 }
@@ -778,7 +727,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp)
+                .padding(horizontal = contentHPadding, vertical = 20.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -885,62 +834,72 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 
         Spacer(modifier = Modifier.weight(1f))
 
-        val canExecute = !isExecuting
-        val executeLabel = "执行任务"
-
-        val buttonAlpha by animateFloatAsState(
-            targetValue = if (isExecuting) 0f else 1f,
-            animationSpec = tween(300, easing = FastOutSlowInEasing),
-            label = "executeButtonAlpha"
-        )
-        val buttonScale by animateFloatAsState(
-            targetValue = if (isExecuting) 0.3f else 1f,
-            animationSpec = tween(300, easing = FastOutSlowInEasing),
-            label = "executeButtonScale"
+        val morphProgress by animateFloatAsState(
+            targetValue = if (isExecuting) 1f else 0f,
+            animationSpec = tween(600, easing = FastOutSlowInEasing),
+            label = "morphProgress"
         )
 
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp),
-            contentAlignment = Alignment.CenterEnd
+                .padding(horizontal = contentHPadding),
+            contentAlignment = Alignment.Center
         ) {
+            val maxButtonWidth = maxWidth
+            val widthProgress = (morphProgress / 0.6f).coerceIn(0f, 1f)
+            val offsetProgress = ((morphProgress - 0.4f) / 0.6f).coerceIn(0f, 1f)
+
+            val buttonWidth = maxButtonWidth - (maxButtonWidth - 48.dp) * widthProgress
+            val offsetX = ((maxButtonWidth - 48.dp) / 2) * offsetProgress
+
+            val containerColor = if (morphProgress > 0.5f) {
+                Color(0xFFFF3B30)
+            } else {
+                MaterialTheme.colorScheme.primary
+            }
+
             Button(
-                onClick = { vm.executeTask() },
-                enabled = canExecute,
+                onClick = { if (isExecuting) vm.stopExecuting() else vm.executeTask() },
                 modifier = Modifier
                     .height(48.dp)
-                    .widthIn(max = 220.dp)
-                    .fillMaxWidth()
-                    .alpha(buttonAlpha)
-                    .graphicsLayer {
-                        scaleX = buttonScale
-                        scaleY = buttonScale
-                    },
+                    .width(buttonWidth)
+                    .offset(x = offsetX),
                 shape = RoundedCornerShape(24.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = Color.White,
-                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                )
+                    containerColor = containerColor,
+                    contentColor = Color.White
+                ),
+                contentPadding = PaddingValues(0.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(executeLabel)
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (morphProgress < 0.5f) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("执行任务")
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .background(Color.White)
+                        )
+                    }
                 }
             }
         }
+
+        Spacer(modifier = Modifier.weight(0.5f))
         }
 
-        FloatingStopButton(
-            visible = isExecuting,
-            onClick = { vm.stopExecuting() }
-        )
     }
 }
 
