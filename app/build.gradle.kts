@@ -104,6 +104,14 @@ android {
             useLegacyPackaging = false
         }
     }
+    // APK 输出文件名：AutoBOT-debug.apk / AutoBOT-release.apk
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            val output = this as com.android.build.gradle.internal.api.ApkVariantOutputImpl
+            output.outputFileName = "AutoBOT-${variant.name}.apk"
+        }
+    }
 }
 
 dependencies {
