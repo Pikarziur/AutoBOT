@@ -47,7 +47,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.lerp as lerpColor
+import androidx.compose.ui.unit.lerp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -912,58 +918,105 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             }
         }
 
-        // ---------- 3. 底部执行任务按钮 ----------
-        // - 未执行时：绿色 「▶ 执行任务」（SH-ADB：选中任务且未执行时可点击；截图识别：禁用）
-        // - 执行中：红色 「■ 停止」（点击调用 vm.stopExecuting() → CancelHandle.cancel() → process.destroy，
-        //   真正终止 sh/脚本子进程，避免只取消协程但脚本仍继续 tap 目标 App）
+        // ---------- 3. 底部执行任务按钮（形变悬浮按钮） ----------
+        // 点击「执行任务」后，按钮固定右侧边缘，从左向右平移缩放：
+        //   阶段1（morph 0→0.5）：宽度满宽→48dp、圆角 12dp→24dp（正圆），执行内容淡出
+        //   阶段2（morph 0.5→1）：颜色 primary→红色、显示 Stop 正方形图标、投影 0dp→8dp（悬浮感）
+        // 再次点击（停止态）或任务结束时，形变对称还原为宽按钮。
         val canExecute = when (selectedMode) {
             MonitorViewModel.TaskMode.SH_ADB -> selectedId != null && !isExecuting
             MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> false
         }
-        val executeLabel: String
         val isStopButton = isExecuting && selectedMode == MonitorViewModel.TaskMode.SH_ADB
-        val icon: ImageVector
-        if (isStopButton) {
-            executeLabel = "停止"
-            icon = Icons.Filled.Stop
-        } else {
-            executeLabel = when (selectedMode) {
-                MonitorViewModel.TaskMode.SH_ADB -> "执行任务"
-                MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
-            }
-            icon = Icons.Filled.PlayArrow
+        val executeLabel = when (selectedMode) {
+            MonitorViewModel.TaskMode.SH_ADB -> "执行任务"
+            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
         }
 
-        Button(
-            onClick = { if (isStopButton) vm.stopExecuting() else vm.executeTask() },
-            // 停止按钮永远可点击（用户点"停止"肯定能点）；执行按钮走 canExecute 判定
-            enabled = isStopButton || canExecute,
+        // 整体形变进度：0=执行态宽按钮，1=停止态圆形悬浮按钮（对称双向动画）
+        val morphProgress by animateFloatAsState(
+            targetValue = if (isStopButton) 1f else 0f,
+            animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+            label = "executeButtonMorph"
+        )
+        // 阶段1 进度：缩放成圆形（前半段）
+        val shrinkProgress = (morphProgress / 0.5f).coerceIn(0f, 1f)
+        // 阶段2 进度：变红 + 正方形 + 投影（后半段，呼应"变成圆形后再变红"）
+        val redProgress = ((morphProgress - 0.5f) / 0.5f).coerceIn(0f, 1f)
+
+        // 外层 BoxWithConstraints 右对齐：按钮缩放时右侧边缘保持固定
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp)
-                .height(48.dp),
-            colors = if (isStopButton) {
-                // 🔴 停止按钮：红色（Material3 配色没有 fixed red，用 Color.Red 明确「停止」语义）
-                ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFFF3B30),
-                    contentColor = Color.White,
-                    disabledContainerColor = Color(0xFFFF3B30).copy(alpha = 0.5f),
-                    disabledContentColor = Color.White.copy(alpha = 0.85f)
-                )
-            } else {
-                ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            }
+                .padding(horizontal = contentHPadding, vertical = 12.dp),
+            contentAlignment = Alignment.CenterEnd
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
+            // 宽度：满宽 → 48dp（与高度相等构成正圆）
+            val animatedWidth = lerp(maxWidth, 48.dp, shrinkProgress)
+            // 圆角：12dp → 24dp（= 48/2，正圆）
+            val animatedCorner = lerp(12.dp, 24.dp, shrinkProgress)
+            // 容器颜色：primary → 红色 #FF3B30（阶段2 才变色）
+            val containerColor = lerpColor(
+                MaterialTheme.colorScheme.primary,
+                Color(0xFFFF3B30),
+                redProgress
             )
-            Spacer(Modifier.width(8.dp))
-            Text(executeLabel)
+            // 投影：0dp → 8dp（阶段2 浮现，形成悬浮感）
+            val animatedElevation = lerp(0.dp, 8.dp, redProgress)
+            // 内容水平内边距：16dp → 0dp（圆形时让正方形图标完全居中）
+            val animatedHPad = lerp(16.dp, 0.dp, shrinkProgress)
+
+            Button(
+                onClick = { if (isStopButton) vm.stopExecuting() else vm.executeTask() },
+                // 停止按钮永远可点击；执行按钮走 canExecute 判定
+                enabled = isStopButton || canExecute,
+                modifier = Modifier
+                    .height(48.dp)
+                    .width(animatedWidth)
+                    .shadow(
+                        elevation = animatedElevation,
+                        shape = RoundedCornerShape(animatedCorner),
+                        clip = false
+                    ),
+                shape = RoundedCornerShape(animatedCorner),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = containerColor,
+                    contentColor = Color.White,
+                    disabledContainerColor = containerColor.copy(alpha = 0.5f),
+                    disabledContentColor = Color.White.copy(alpha = 0.85f)
+                ),
+                contentPadding = PaddingValues(horizontal = animatedHPad)
+            ) {
+                // 内容叠加：执行态（PlayArrow + 文字）与停止态（Stop 正方形）交叉淡入淡出
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // 执行态内容：阶段1 内淡出
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.alpha((1f - shrinkProgress).coerceIn(0f, 1f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(executeLabel)
+                    }
+                    // 停止态内容：阶段2 内淡入的 Stop 正方形图标
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .alpha(redProgress.coerceIn(0f, 1f))
+                    )
+                }
+            }
         }
     }
 }
