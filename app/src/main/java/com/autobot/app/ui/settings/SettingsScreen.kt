@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +41,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,6 +55,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.ShizukuManager
+import kotlinx.coroutines.launch
 
 /** */
 @Composable
@@ -63,12 +66,20 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
     // 设置页独立 SnackbarHost：监听 SettingsViewModel.toast，1 秒消失
     val snackbarHostState = remember { SnackbarHostState() }
+    val snackScope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         vm.toast.collect { msg ->
-            snackbarHostState.showSnackbar(
-                message = msg,
-                durationMillis = 1000
-            )
+            snackScope.launch {
+                val job = launch {
+                    snackbarHostState.showSnackbar(
+                        message = msg,
+                        duration = SnackbarDuration.Indefinite
+                    )
+                }
+                kotlinx.coroutines.delay(1000)
+                snackbarHostState.currentSnackbarData?.dismiss()
+                job.cancel()
+            }
         }
     }
 
@@ -124,7 +135,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 hostState = snackbarHostState,
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) { data ->
-                Snackbar(snackbarData = data, durationMillis = 1000)
+                Snackbar(snackbarData = data)
             }
         }
     }

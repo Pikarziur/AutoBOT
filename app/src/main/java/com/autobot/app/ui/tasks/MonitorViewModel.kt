@@ -95,7 +95,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _executeMessage = MutableStateFlow<String?>(null)
     val executeMessage: StateFlow<String?> = _executeMessage.asStateFlow()
 
-    private val _snackbarMessage = Channel<String>(extraBufferCapacity = 8)
+    private val _snackbarMessage = Channel<String>(capacity = Channel.BUFFERED)
     val snackbarMessage: Flow<String> = _snackbarMessage.receiveAsFlow()
 
     // 统一的 toast/snackbar 消息发送入口（替代所有 _executeMessage.value = msg）

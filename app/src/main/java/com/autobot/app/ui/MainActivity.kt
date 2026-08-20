@@ -31,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -48,6 +49,7 @@ import com.autobot.app.ui.settings.SettingsScreen
 import com.autobot.app.ui.tasks.MonitorViewModel
 import com.autobot.app.ui.tasks.TasksScreen
 import com.autobot.app.ui.theme.AutoBotTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -126,12 +128,20 @@ private fun MainScreen() {
 
     // 全局 Snackbar：监听 VM 的 snackbarMessage Channel，1 秒后自动消失
     val snackbarHostState = remember { SnackbarHostState() }
+    val snackScope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         vm.snackbarMessage.collect { msg ->
-            snackbarHostState.showSnackbar(
-                message = msg,
-                durationMillis = 1000  // 1 秒
-            )
+            snackScope.launch {
+                val job = launch {
+                    snackbarHostState.showSnackbar(
+                        message = msg,
+                        duration = SnackbarDuration.Indefinite
+                    )
+                }
+                kotlinx.coroutines.delay(1000)
+                snackbarHostState.currentSnackbarData?.dismiss()
+                job.cancel()
+            }
         }
     }
 
@@ -139,10 +149,7 @@ private fun MainScreen() {
         modifier = Modifier.fillMaxSize(),
         snackbarHost = {
             SnackbarHost(hostState = snackbarHostState) { data ->
-                Snackbar(
-                    snackbarData = data,
-                    durationMillis = 1000
-                )
+                Snackbar(snackbarData = data)
             }
         },
         bottomBar = {
