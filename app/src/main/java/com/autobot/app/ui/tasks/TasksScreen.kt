@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,7 +39,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -58,15 +56,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -833,105 +827,65 @@ private fun TasksTabsSection(
  * 任务标签页
  *
  * 布局自上而下：
- *   1. 模式选择（竖向 RadioButton + 文本，单选交互）
- *      - adb shell
- *      - 脚本任务下拉框（**adb shell 文字下方独立一行**，仅 SH-ADB 模式选中时显示）
- *      - 截图识别
- *   2. 模式对应内容区（weight(1f) 占满中部空间）
- *      - SH-ADB：无额外内容（脚本下拉框已放在模式行下方）
- *      - 截图识别：占位文本
- *   3. 底部执行任务按钮（跨模式，根据当前模式启用/禁用）
- *
- * RadioButton 行为：
- *   - 选中：实心 primary + onSurface 主色文字
- *   - 未选：描边 + onSurfaceVariant 灰文字
- *   - 整行可点击（点 Row 任意位置即触发 onClick，等同于点 RadioButton）
+ *   1. 下拉列表（占位，后续完善逻辑）
+ *   2. 底部执行任务按钮（形变悬浮按钮：点击后固定右边缘缩放成正圆红色 Stop 浮按钮）
  */
 @Composable
 private fun TasksTabContent(vm: MonitorViewModel) {
-    val selectedMode by vm.selectedMode.collectAsStateWithLifecycle()
-    val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
     val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
 
     // ★统一的"内容水平内边距"：让卡片内容不贴左右边，视觉更精致
     val contentHPadding = 20.dp
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 1. 模式选择（竖向 RadioButton） ----------
-        // 布局：
-        //   ○ adb shell
-        //   [ 脚本任务下拉框 ▼ ]   ← 独立一行，放在"adb shell"文字的下方
-        //   ○ 截图识别
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            ModeRadioButtonRow(
-                label = "adb shell",
-                selected = selectedMode == MonitorViewModel.TaskMode.SH_ADB,
-                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SH_ADB) }
-            )
-
-            // ★脚本任务下拉框：放在"adb shell"文字下方独立一行，仅 SH-ADB 模式选中时显示
-            if (selectedMode == MonitorViewModel.TaskMode.SH_ADB) {
-                ShAdbModeContent(vm)
-            }
-
-            ModeRadioButtonRow(
-                label = "截图识别",
-                selected = selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION,
-                onClick = { vm.selectMode(MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) }
-            )
-        }
-
-        // ---------- 2. 模式对应内容区 ----------
-        // SH-ADB：脚本下拉框已放在模式行下方，此处保留弹性空间
-        // 截图识别：占位文本
+        // ---------- 1. 下拉列表（占位，后续完善逻辑） ----------
+        // 样式与应用整体下拉框一致：12dp 圆角 + 1dp 描边 + 44dp 高 + 白底
+        // 暂无选项与点击逻辑，仅展示占位文本与下拉箭头
         Box(
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding)
+                .padding(horizontal = contentHPadding, vertical = 12.dp)
+                .height(44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outline,
+                    shape = RoundedCornerShape(12.dp)
+                )
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart
         ) {
-            if (selectedMode == MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION) {
-                // 截图识别模式占位（后续版本完善）
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "截图识别模式（功能开发中）",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "后续版本将完善此功能",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "请选择",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
             }
         }
+
+        // ---------- 2. 弹性留白（把按钮顶到底部） ----------
+        Spacer(modifier = Modifier.weight(1f))
 
         // ---------- 3. 底部执行任务按钮（形变悬浮按钮） ----------
         // 点击「执行任务」后，按钮固定右侧边缘，从左向右平移缩放：
         //   阶段1（morph 0→0.5）：宽度满宽→48dp、圆角 12dp→24dp（正圆），执行内容淡出
         //   阶段2（morph 0.5→1）：颜色 primary→红色、显示 Stop 正方形图标、投影 0dp→8dp（悬浮感）
         // 再次点击（停止态）或任务结束时，形变对称还原为宽按钮。
-        val canExecute = when (selectedMode) {
-            MonitorViewModel.TaskMode.SH_ADB -> selectedId != null && !isExecuting
-            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> false
-        }
-        val isStopButton = isExecuting && selectedMode == MonitorViewModel.TaskMode.SH_ADB
-        val executeLabel = when (selectedMode) {
-            MonitorViewModel.TaskMode.SH_ADB -> "执行任务"
-            MonitorViewModel.TaskMode.SCREENSHOT_RECOGNITION -> "功能开发中"
-        }
+        val canExecute = !isExecuting
+        val isStopButton = isExecuting
+        val executeLabel = "执行任务"
 
         // 整体形变进度：0=执行态宽按钮，1=停止态圆形悬浮按钮（对称双向动画）
         val morphProgress by animateFloatAsState(
@@ -1014,212 +968,6 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                         modifier = Modifier
                             .size(20.dp)
                             .alpha(redProgress.coerceIn(0f, 1f))
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * 模式单选项（RadioButton + 文本，竖向排列用）
- *
- * - 整行可点击：点 Row 任意位置均触发 onClick（等同点 RadioButton 本身）
- * - selected=true ：RadioButton 选中 + 文字主色 onSurface
- * - selected=false：RadioButton 未选 + 文字灰 onSurfaceVariant
- * 始终可点击，单选交互（点未选项即切换到该模式）
- */
-@Composable
-private fun ModeRadioButtonRow(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        RadioButton(
-            selected = selected,
-            onClick = onClick,
-            colors = RadioButtonDefaults.colors(
-                selectedColor = MaterialTheme.colorScheme.primary,
-                unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                disabledSelectedColor = MaterialTheme.colorScheme.primary,
-                disabledUnselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (selected) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
-        )
-    }
-}
-
-/**
- * SH-ADB 模式内容（脚本任务下拉框）
- *
- * 调用位置：作为独立一行放在【adb shell】RadioButton 行的**下方**、截图识别行的上方，
- *          仅当 SH-ADB 模式被选中时才显示（未选中时不占高度）
- *
- * 下拉框行为：
- *   - 显示当前选中的脚本任务名（或"请选择脚本"占位）
- *   - 点击展开 DropdownMenu，列出所有 scriptTasks 供选择
- *   - 空列表时显示"暂无脚本（请在 app/src/main/assets/scripts/ 预置 .sh）"
- *
- * ★脚本来源（新策略）★：app 内部 `assets/scripts/` 预置 .sh 文件
- *   - 由 ScriptTaskManager.loadBundledScripts() 在启动时自动扫描并导入到
- *     filesDir/Mode1/scripts/，统一通过下拉框选择
- *   - 不再提供运行时 +/− 按钮（脚本由项目打包，不可由用户在 app 内增删）
- *
- * 注：执行按钮位于父级 TasksTabContent 底部（跨模式），本组件不渲染执行入口
- *
- * 脚本文件存储路径：app 内部 filesDir/Mode1/scripts/<uuid>_<原文件名>.sh
- *
- * 下拉框视觉优化（与应用整体设计风格一致）：
- *   - 圆角 12dp（与项目卡片圆角对齐）
- *   - 边框：默认 1dp outline 灰；展开时 2dp primary 蓝（视觉反馈）
- *   - 背景：surface 白；高度 44dp（标准触摸目标）
- *   - 文字：选中 titleSmall 主色；占位 bodyMedium 灰
- *   - 下拉箭头：默认灰；展开时 primary 蓝（与边框协调）
- *   - 列表项：选中项左侧 Check 图标 + primary 文字 + Medium 字重
- *
- * 实现说明：
- *   - 不使用 ExposedDropdownMenuBox（material3 1.1.x 为 @ExperimentalMaterial3Api）
- *   - 用 Box + Modifier.border + DropdownMenu 等价实现，避免实验性 API
- */
-@Composable
-private fun ShAdbModeContent(
-    vm: MonitorViewModel,
-    modifier: Modifier = Modifier
-) {
-    val scriptTasks by vm.scriptTasks.collectAsStateWithLifecycle()
-    val selectedId by vm.selectedScriptTaskId.collectAsStateWithLifecycle()
-
-    // 注：原 SAF 弹窗被国内 ROM "安全浏览" 拦截 .sh 文件，
-    //     改用 Shizuku `find` + `cat` 路径绕开系统过滤层（详见 vm.showShFilePicker）
-
-    // 下拉框展开状态（remember 持有，无需提升到 VM）
-    var expanded by remember { mutableStateOf(false) }
-    val selectedTask = scriptTasks.find { it.id == selectedId }
-
-    // 边框/箭头颜色：展开时 primary 蓝（视觉反馈），否则 outline 灰
-    val borderColor = if (expanded) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline
-    }
-    val borderWidth = if (expanded) 2.dp else 1.dp
-    val arrowColor = if (expanded) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Box(
-        modifier = modifier
-            .padding(horizontal = 4.dp, vertical = 4.dp)
-    ) {
-        // 输入框样式：圆角 12dp + 描边 + 文本 + 下拉箭头
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp)  // 标准触摸目标高度
-                .clip(RoundedCornerShape(12.dp))  // 12dp 与项目卡片圆角一致
-                .background(MaterialTheme.colorScheme.surface)  // 白色背景
-                .border(
-                    width = borderWidth,
-                    color = borderColor,
-                    shape = RoundedCornerShape(12.dp)
-                )
-                .clickable { expanded = !expanded }
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = selectedTask?.name ?: "请选择脚本",
-                    modifier = Modifier.weight(1f),
-                    style = if (selectedTask != null) {
-                        MaterialTheme.typography.titleSmall  // 选中时更醒目
-                    } else {
-                        MaterialTheme.typography.bodyMedium  // 占位时常规
-                    },
-                    color = if (selectedTask != null) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Filled.ArrowDropDown,
-                    contentDescription = null,
-                    tint = arrowColor,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        // 下拉弹出菜单（位置由框架自动计算，默认在锚点 Box 下方）
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            if (scriptTasks.isEmpty()) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = "暂无脚本（请在 app/src/main/assets/scripts/ 预置 .sh）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    onClick = { expanded = false }
-                )
-            } else {
-                scriptTasks.forEach { task ->
-                    val isSelected = task.id == selectedId
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = task.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isSelected) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
-                            )
-                        },
-                        onClick = {
-                            vm.selectScriptTask(task.id)
-                            expanded = false
-                        },
-                        leadingIcon = if (isSelected) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        } else null
                     )
                 }
             }
