@@ -57,6 +57,8 @@ android {
 
     buildTypes {
         debug {
+            // Debug 独立 applicationId，可与 release 同时安装
+            applicationIdSuffix = ".debug"
             // Debug 也用固定签名，保证 Shizuku 授权不随构建变化
             if (hasKeystore) {
                 signingConfig = signingConfigs.findByName("release")
