@@ -264,6 +264,58 @@ fun TasksScreen(
     }
 }
 
+/** 日志 Tab 中的浮动停止按钮：isExecuting 且当前在日志 Tab 时显示，覆盖在内容之上 */
+@Composable
+private fun FloatingStopButton(
+    visible: Boolean,
+    onClick: () -> Unit
+) {
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "fabScale"
+    )
+    val alpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 200),
+        label = "fabAlpha"
+    )
+
+    if (scale > 0.01f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(end = 20.dp, bottom = 24.dp),
+            contentAlignment = Alignment.BottomEnd
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .alpha(alpha)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .shadow(
+                        elevation = 8.dp,
+                        shape = CircleShape,
+                        clip = false
+                    )
+                    .clip(CircleShape)
+                    .background(Color(0xFFFF3B30))
+                    .clickable(onClick = onClick),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(Color.White)
+                )
+            }
+        }
+    }
+}
+
 /** */
 @Composable
 private fun VirtualDisplayPreview(
@@ -666,6 +718,7 @@ private fun TasksTabsSection(
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableStateOf(0) }
+    val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
 
     Card(
         modifier = modifier,
@@ -673,29 +726,36 @@ private fun TasksTabsSection(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = Color.Transparent,
-                contentColor = MaterialTheme.colorScheme.primary,
-                divider = {}
-            ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
-                )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    divider = {}
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
+                    )
+                }
+
+                when (selectedTab) {
+                    0 -> TasksTabContent(vm)
+                    1 -> LogsTabContent(vm)
+                }
             }
 
-            when (selectedTab) {
-                0 -> TasksTabContent(vm)
-                1 -> LogsTabContent(vm)
-            }
+            FloatingStopButton(
+                visible = isExecuting && selectedTab == 1,
+                onClick = { vm.stopExecuting() }
+            )
         }
     }
 }
@@ -832,7 +892,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.weight(1.2f))
 
         val morphProgress by animateFloatAsState(
             targetValue = if (isExecuting) 1f else 0f,
@@ -897,7 +957,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.weight(0.5f))
+        Spacer(modifier = Modifier.weight(0.3f))
         }
 
     }
