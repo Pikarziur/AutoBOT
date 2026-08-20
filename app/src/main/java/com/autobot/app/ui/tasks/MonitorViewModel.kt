@@ -243,10 +243,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     fun refreshShizukuStatus(): Boolean {
         val ctx = getApplication<Application>().applicationContext
         val diag = ShizukuManager.diagnoseShizuku(ctx)
-        val text = ShizukuManager.getDiagnosisText(ctx, diag)
         val granted = diag == ShizukuManager.ShizukuDiagnosis.OK
         _shizukuGranted.value = granted
-        appendLauncherLog("[${stamp()}] Shizuku 诊断：$text (code=$diag)")
+        // 授权成功不写入应用日志，仅在 Logcat 输出便于开发期排查
         Log.i(TAG, "refreshShizukuStatus: diag=$diag, granted=$granted")
         return granted
     }
