@@ -39,6 +39,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -775,8 +776,8 @@ private fun AppIconDrawable(
  * 整体包裹在白色 Card 内，形成一个独立的"组件"视觉单元：
  *   - Card：白底 + 12dp 圆角 + 1dp 阴影（与项目其他卡片样式一致）
  *   - TabRow(M3) + 内容区：
- *     - Tab 0 "任务"：模式切换 + 模式对应内容（SH-ADB / 截图识别占位）
- *     - Tab 1 "日志"：实时显示脚本执行日志
+ *     - Tab 0 "任务"：任务文件下拉选择 + 形变执行按钮（注入 MotionEvent 到 VD）
+ *     - Tab 1 "日志"：实时显示任务执行日志
  *
  * 选中状态由本组件 remember 持有，无需提升到 ViewModel（与 VM 业务状态无关）
  */
@@ -819,60 +820,158 @@ private fun TasksTabsSection(
         }
     }
 
-    // 注：.sh 文件选择器 Dialog 已移除（不再通过 Shizuku find/cat 运行时导入）
-    // 脚本来源已改为 app 内部 assets/scripts/ 预置，由 ScriptTaskManager.loadBundledScripts() 启动时自动装载
+    // 注：任务文件由 TaskFileManager 维护，启动时从 assets/tasks/ 装载到 filesDir/tasks/
+    // 用户可在该目录新增/编辑 *.json 任务文件，下次进入任务 Tab 时下拉列表会自动刷新
 }
 
 /**
  * 任务标签页
  *
  * 布局自上而下：
- *   1. 下拉列表（占位，后续完善逻辑）
+ *   1. 任务文件下拉列表（读取 filesDir/tasks/ 下 *.json，由 TaskFileManager 维护）
  *   2. 底部执行任务按钮（形变悬浮按钮：点击后固定右边缘缩放成正圆红色 Stop 浮按钮）
+ *
+ * 下拉项选中 → vm.selectTaskFile(id)；
+ * 点击执行任务 → vm.executeTask()，TaskExecutor 在 App 进程内驱动 MotionEvent 注入到 VD。
  */
 @Composable
 private fun TasksTabContent(vm: MonitorViewModel) {
     val isExecuting by vm.isExecuting.collectAsStateWithLifecycle()
+    val taskFiles by vm.taskFiles.collectAsStateWithLifecycle()
+    val selectedTaskFileId by vm.selectedTaskFileId.collectAsStateWithLifecycle()
 
     // ★统一的"内容水平内边距"：让卡片内容不贴左右边，视觉更精致
     val contentHPadding = 20.dp
 
+    // 切到任务 Tab 时刷新一次任务文件列表（用户外部编辑/新增文件后可见最新）
+    LaunchedEffect(Unit) {
+        vm.refreshTaskFiles()
+    }
+
+    // 下拉展开状态
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    // 当前选中任务文件对象（null 表示未选中）
+    val selectedTaskFile = taskFiles.firstOrNull { it.id == selectedTaskFileId }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // ---------- 1. 下拉列表（占位，后续完善逻辑） ----------
+        // ---------- 1. 任务下拉列表 ----------
         // 样式与应用整体下拉框一致：12dp 圆角 + 1dp 描边 + 44dp 高 + 白底
-        // 暂无选项与点击逻辑，仅展示占位文本与下拉箭头
-        // 上下间距 16dp：与顶部卡片边及下方留白形成"呼吸感"
+        // 展开时描边变为主色蓝（2dp）+ 文字变主色，引导"已激活可选项"
+        val borderColor = if (dropdownExpanded) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.outline
+        }
+        val borderWidth = if (dropdownExpanded) 2.dp else 1.dp
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 16.dp)
-                .height(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outline,
-                    shape = RoundedCornerShape(12.dp)
-                )
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.CenterStart
+                .padding(horizontal = contentHPadding, vertical = 12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "请选择",
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Filled.ArrowDropDown,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp)
-                )
+            // 触发器行：点击展开/收起 DropdownMenu
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(
+                        width = borderWidth,
+                        color = borderColor,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .clickable { dropdownExpanded = !dropdownExpanded }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = selectedTaskFile?.name ?: "请选择",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (selectedTaskFile != null) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDropDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            // 下拉菜单：12dp 圆角 + 白底 + 44dp 行高
+            // 选中项左侧显示 Check 图标 + 主色文字，未选中项仅文字
+            androidx.compose.material3.DropdownMenu(
+                expanded = dropdownExpanded,
+                onDismissRequest = { dropdownExpanded = false },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+            ) {
+                if (taskFiles.isEmpty()) {
+                    // 没有任何任务文件时显示提示行（不可点击）
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(
+                            text = "暂无任务文件（放入 filesDir/tasks/）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    taskFiles.forEach { task ->
+                        val isSelected = task.id == selectedTaskFileId
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            text = task.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    } else {
+                                        Spacer(Modifier.width(26.dp))  // 与 Check 图标等宽占位
+                                        Text(
+                                            text = task.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            },
+                            onClick = {
+                                vm.selectTaskFile(task.id)
+                                dropdownExpanded = false
+                            },
+                            modifier = Modifier.height(44.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -881,10 +980,9 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 
         // ---------- 3. 底部执行任务按钮（形变悬浮按钮） ----------
         // 点击「执行任务」后，按钮固定右侧边缘，从左向右平移缩放：
-        //   阶段1（morph 0→0.5）：宽度 220dp→48dp、圆角始终保持最大 24dp（= 高度一半），执行内容淡出
+        //   阶段1（morph 0→0.5）：宽度满宽→48dp、圆角 12dp→24dp（正圆），执行内容淡出
         //   阶段2（morph 0.5→1）：颜色 primary→红色、显示 Stop 正方形图标、投影 0dp→8dp（悬浮感）
-        // 再次点击（停止态）或任务结束时，形变对称还原为胶囊形宽按钮。
-        // 圆角始终拉到最大 24dp：执行态构成胶囊形宽按钮，停止态构成正圆，视觉过渡自然。
+        // 再次点击（停止态）或任务结束时，形变对称还原为宽按钮。
         val canExecute = !isExecuting
         val isStopButton = isExecuting
         val executeLabel = "执行任务"
@@ -901,20 +999,16 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         val redProgress = ((morphProgress - 0.5f) / 0.5f).coerceIn(0f, 1f)
 
         // 外层 BoxWithConstraints 右对齐：按钮缩放时右侧边缘保持固定
-        // 上下间距 16dp：与下拉列表统一呼吸节奏，不与卡片底边紧贴
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 16.dp),
+                .padding(horizontal = contentHPadding, vertical = 12.dp),
             contentAlignment = Alignment.CenterEnd
         ) {
-            // ★合适宽度：执行态取容器宽度与 220dp 的较小值（小屏自适应），停止态缩为 48dp 正圆
-            val initialWidth = maxWidth.coerceAtMost(220.dp)
-            val animatedWidth = lerp(initialWidth, 48.dp, shrinkProgress)
-            // ★圆角拉到最大：始终 24dp（= 48dp 高度的一半）
-            //   - 执行态宽按钮：胶囊形（两端半圆，与悬浮按钮风格统一）
-            //   - 停止态正圆：与高度 48dp 构成正圆，配合红色 + 投影形成 FAB 视觉
-            val buttonCorner = 24.dp
+            // 宽度：满宽 → 48dp（与高度相等构成正圆）
+            val animatedWidth = lerp(maxWidth, 48.dp, shrinkProgress)
+            // 圆角：12dp → 24dp（= 48/2，正圆）
+            val animatedCorner = lerp(12.dp, 24.dp, shrinkProgress)
             // 容器颜色：primary → 红色 #FF3B30（阶段2 才变色）
             val containerColor = lerpColor(
                 MaterialTheme.colorScheme.primary,
@@ -935,10 +1029,10 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                     .width(animatedWidth)
                     .shadow(
                         elevation = animatedElevation,
-                        shape = RoundedCornerShape(buttonCorner),
+                        shape = RoundedCornerShape(animatedCorner),
                         clip = false
                     ),
-                shape = RoundedCornerShape(buttonCorner),
+                shape = RoundedCornerShape(animatedCorner),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = containerColor,
                     contentColor = Color.White,

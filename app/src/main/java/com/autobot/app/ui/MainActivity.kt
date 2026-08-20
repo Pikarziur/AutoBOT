@@ -37,7 +37,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autobot.app.manager.TaskManager
-import com.autobot.app.model.TaskInfo
 import com.autobot.app.service.TaskService
 import com.autobot.app.ui.settings.SettingsScreen
 import com.autobot.app.ui.tasks.MonitorViewModel
@@ -66,11 +65,11 @@ class MainActivity : AppCompatActivity() {
 
     // 任务监听器：任务状态变化时确保前台服务运行（原 TasksFragment 职责）
     private val taskListener = object : TaskManager.TaskListener {
-        override fun onTaskStarted(task: TaskInfo) = ensureForegroundService()
-        override fun onTaskOutput(task: TaskInfo, line: String) {}
-        override fun onTaskCompleted(task: TaskInfo) = ensureForegroundService()
-        override fun onTaskStopped(task: TaskInfo) = ensureForegroundService()
-        override fun onTaskError(task: TaskInfo, error: String) = ensureForegroundService()
+        override fun onTaskStarted(taskId: String, taskName: String) = ensureForegroundService()
+        override fun onTaskOutput(taskId: String, line: String) {}
+        override fun onTaskCompleted(taskId: String) = ensureForegroundService()
+        override fun onTaskStopped(taskId: String, reason: String) = ensureForegroundService()
+        override fun onTaskError(taskId: String, error: String) = ensureForegroundService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

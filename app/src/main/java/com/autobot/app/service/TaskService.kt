@@ -11,13 +11,19 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.autobot.app.R
+import com.autobot.app.manager.TaskExecutor
 import com.autobot.app.manager.TaskManager
-import com.autobot.app.model.TaskStatus
 import com.autobot.app.ui.MainActivity
 
 /**
  * 后台任务前台服务
- * 用于在后台保持任务运行，避免被系统查杀
+ *
+ * ★重要变更★：旧版依赖 SH 脚本子进程保活；新版任务动作由 [TaskExecutor] 在 App 进程内
+ * 通过 CompositionService 驱动 MotionEvent 注入到 VD。本服务作用变成纯"前台保活通知"：
+ *   - 任务运行期间作为前台服务，避免 App 被系统查杀 → App 进程不死 → server pipe 不死
+ *     → VD 持续合成 + MotionEvent 注入持续生效（即使切到后台/小窗也不中断）
+ *   - 通知文案展示当前任务名，方便用户在通知栏快速看到正在跑的任务
+ *   - 任务结束（完成/停止/出错）后自动 stopSelf 释放前台服务
  */
 class TaskService : Service() {
 
@@ -49,23 +55,23 @@ class TaskService : Service() {
         createNotificationChannel()
         // 注册任务状态监听器（onCreate 仅一次，避免 onStartCommand 重复调用造成重复监听）
         TaskManager.addListener(object : TaskManager.TaskListener {
-            override fun onTaskStarted(task: com.autobot.app.model.TaskInfo) {
+            override fun onTaskStarted(taskId: String, taskName: String) {
                 updateNotification()
             }
 
-            override fun onTaskOutput(task: com.autobot.app.model.TaskInfo, line: String) {}
+            override fun onTaskOutput(taskId: String, line: String) {}
 
-            override fun onTaskCompleted(task: com.autobot.app.model.TaskInfo) {
-                updateNotification()
-                checkAndStopIfNeeded()
-            }
-
-            override fun onTaskStopped(task: com.autobot.app.model.TaskInfo) {
+            override fun onTaskCompleted(taskId: String) {
                 updateNotification()
                 checkAndStopIfNeeded()
             }
 
-            override fun onTaskError(task: com.autobot.app.model.TaskInfo, error: String) {
+            override fun onTaskStopped(taskId: String, reason: String) {
+                updateNotification()
+                checkAndStopIfNeeded()
+            }
+
+            override fun onTaskError(taskId: String, error: String) {
                 updateNotification()
                 checkAndStopIfNeeded()
             }
@@ -120,11 +126,15 @@ class TaskService : Service() {
     private fun buildNotification(): Notification {
         val runningTasks = TaskManager.getRunningTasks()
         val count = runningTasks.size
-        val contentText = if (count > 0) {
-            val first = runningTasks.first()
-            "运行中任务数: $count - ${first.name}"
-        } else {
-            "无运行中任务"
+        // 文案反映当前任务名：让用户在通知栏一眼看到正在跑哪个任务
+        // 优先使用 TaskExecutor.currentTaskName()（实时性最高），fallback 才用 runningTasks
+        val taskName = TaskExecutor.currentTaskName().ifBlank {
+            runningTasks.firstOrNull()?.name ?: ""
+        }
+        val contentText = when {
+            count > 0 && taskName.isNotBlank() -> "正在执行：$taskName"
+            count > 0 -> "运行中任务数: $count"
+            else -> "无运行中任务"
         }
 
         val intent = Intent(this, MainActivity::class.java).apply {

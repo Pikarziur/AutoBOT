@@ -3,13 +3,20 @@ package com.autobot.app
 import android.app.Application
 import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
-import com.autobot.app.manager.ScriptTaskManager
 import com.autobot.app.manager.ShizukuManager
+import com.autobot.app.manager.TaskFileManager
+import com.autobot.app.service.CompositionService
 import rikka.shizuku.Shizuku
 
 /**
  * AutoBOT 应用全局 Application 类
  * 用于初始化全局配置和监听 Shizuku 连接状态
+ *
+ * ★重要变更（替代 SH 脚本模式）★：
+ *   - 不再 init ScriptTaskManager（已删除，旧版 adb shell 路径全部清理）
+ *   - 改为 init TaskFileManager：扫描 filesDir/tasks/ 加载 JSON 任务文件
+ *   - 持有 Application 级 [compositionService] 单例，让 VD 与 server pipe 跨 Activity 生命周期保活
+ *     （配合 TaskService 前台服务，应用切到后台/小窗仍能持续执行任务动作）
  */
 class AutoBOTApp : Application() {
 
@@ -20,6 +27,24 @@ class AutoBOTApp : Application() {
 
         fun getInstance(): AutoBOTApp {
             return instance ?: throw IllegalStateException("Application not initialized")
+        }
+
+        /**
+         * app 级 CompositionService 单例（跨 Activity 生命周期）
+         *
+         * MonitorViewModel/TaskExecutor 都从这里取，避免 Activity 销毁时 VD 被一起 stop。
+         * 真正的 VD 释放时机：用户主动停止 VD，或 App 进程被系统杀掉时随进程一起清理
+         * （server 进程的 stdin pipe EOF 后会自动 exit）。
+         */
+        @Volatile
+        private var compositionServiceInstance: CompositionService? = null
+
+        fun getCompositionService(): CompositionService {
+            return compositionServiceInstance ?: synchronized(this) {
+                compositionServiceInstance ?: CompositionService(getInstance()).also {
+                    compositionServiceInstance = it
+                }
+            }
         }
     }
 
@@ -37,11 +62,12 @@ class AutoBOTApp : Application() {
         //    生产环境可上报崩溃到后台，此处记录日志便于调试
         installGlobalCrashHandler()
 
-        // 2. 初始化 SH 脚本任务管理器（加载已持久化的脚本任务列表）
+        // 2. 初始化任务文件管理器（替代旧版 ScriptTaskManager）
+        //    扫描 filesDir/tasks/ 加载 JSON 任务文件 + 从 assets/tasks/ 装载预置任务
         try {
-            ScriptTaskManager.init(this)
+            TaskFileManager.init(this)
         } catch (e: Exception) {
-            Log.e(TAG, "ScriptTaskManager init failed", e)
+            Log.e(TAG, "TaskFileManager init failed", e)
         }
 
         // 3. 监听 Shizuku 连接状态变化

@@ -89,12 +89,21 @@
             android:name="rikka.shizuku.max_parcel_size"
             android:value="1048576" />
 
-        <!-- 主 Activity：configChanges 声明 smallestScreenSize 避免横竖屏切换重建 Fragment/ViewModel -->
+        <!--
+            主 Activity：configChanges 声明 smallestScreenSize 避免横竖屏切换重建 Fragment/ViewModel
+            ★小窗 / 画中画支持★：
+              · supportsPictureInPicture=true：允许进入画中画模式，切到后台/小窗时 VD 仍由
+                app 级 CompositionService 单例保活，任务继续执行不被打断
+              · resizeableActivity=true：允许分屏/自由窗口调整尺寸，配合 configChanges
+                让 Activity 在尺寸变化时不重建，SurfaceView 直接接收新尺寸重绑预览
+        -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
             android:theme="@style/Theme.AutoBOT">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

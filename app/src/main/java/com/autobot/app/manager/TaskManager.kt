@@ -1,42 +1,103 @@
 package com.autobot.app.manager
 
-import com.autobot.app.model.TaskInfo
-import com.autobot.app.model.TaskStatus
-import com.autobot.app.model.TaskType
-import com.autobot.app.util.ShellExecutor
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.cancelAndJoin
 
 /**
- * 后台任务管理器
- * 负责管理和调度后台任务，支持在独立线程中执行 shell 命令/脚本
+ * 任务状态跟踪 hub（替代旧版 SH 脚本进程管理器）
+ *
+ * ★重要变更（与旧版差异）★：
+ *   旧版负责 Shizuku.newProcess 启 sh 子进程跑 .sh 脚本，submitTask(type=SCRIPT) 走
+ *   ShellExecutor.executeScriptStreaming。新版 adb shell 路径已全部删除，
+ *   任务动作由 [TaskExecutor] 在 App 进程内通过 CompositionService 直接驱动
+ *   IInputManager.injectInputEvent 注入到 VD。
+ *
+ * 现职责（精简版状态 hub）：
+ *   1. 维护"当前正在执行的任务" id/name + 输出日志缓冲
+ *   2. 通过 [TaskListener] 把任务生命周期事件通知给 UI 与前台服务 [com.autobot.app.service.TaskService]
+ *   3. 提供 [stopAllTasks] 给 UI 红色停止按钮调用 → 转发到 [TaskExecutor.stop]
+ *
+ * 不再持有 Process / CancelHandle / sh 子进程。
+ *
+ * 协作方：
+ *   - [TaskExecutor]：调用 [notifyStarted]/[notifyOutput]/[notifyCompleted]/[notifyStopped]/[notifyError]
+ *     上报任务状态
+ *   - [com.autobot.app.ui.tasks.MonitorViewModel]：注册 listener 把状态推给 UI 按钮变形 + 日志区
+ *   - [com.autobot.app.service.TaskService]：注册 listener 在有任务时启动前台服务保活
  */
 object TaskManager {
 
-    // 运行中的任务：taskId -> (TaskInfo, Job, CancelHandle)
-    // CancelHandle 用于用户点红色停止按钮时，真正 destroy 正在执行的 sh 子进程
-    private val runningTasks = mutableMapOf<String, Triple<TaskInfo, Job, ShellExecutor.CancelHandle>>()
+    private const val TAG = "TaskManager"
+    private const val LOG_MAX_LINES = 500
 
-    // 任务历史
-    private val taskHistory = mutableListOf<TaskInfo>()
+    /** 当前正在执行的任务：taskId → 简单状态记录 */
+    private val runningTasks = mutableMapOf<String, RunningTaskInfo>()
 
-    // 任务状态变化监听器
+    /** 任务历史（最近 N 条，仅用于状态查询，不再保留 stdout 全量） */
+    private val taskHistory = mutableListOf<RunningTaskInfo>()
+
+    /** 任务状态变化监听器（UI + 前台服务各注册一份） */
     private val listeners = mutableListOf<TaskListener>()
 
+    /** 日志缓冲：所有任务的合并输出（UI 日志 Tab 显示） */
+    private val logBuffer = mutableListOf<String>()
+    private val logLock = Any()
+
+    /** 后台日志清理协程作用域 */
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
     /**
+     * 当前运行中的任务信息
+     *
+     * @param id          任务 ID（= TaskFile.id）
+     * @param name        任务展示名（用于通知栏文案）
+     * @param startTimeMs 启动时间戳
+     */
+    data class RunningTaskInfo(
+        val id: String,
+        val name: String,
+        val startTimeMs: Long = System.currentTimeMillis(),
+        var endTimeMs: Long? = null,
+        var status: TaskStatus = TaskStatus.RUNNING,
+        var errorMessage: String? = null
+    ) {
+        fun getDurationText(): String {
+            val end = endTimeMs ?: System.currentTimeMillis()
+            val diff = end - startTimeMs
+            val s = diff / 1000
+            val m = s / 60
+            val h = m / 60
+            return when {
+                h > 0 -> "${h}h ${m % 60}m ${s % 60}s"
+                m > 0 -> "${m}m ${s % 60}s"
+                else -> "${s}s"
+            }
+        }
+    }
+
+    /**
+     * 任务状态枚举
+     */
+    enum class TaskStatus {
+        RUNNING,     // 运行中
+        COMPLETED,   // 已完成
+        STOPPED,     // 已停止
+        ERROR        // 出错
+    }
+
+    /**
      * 任务状态监听器接口
+     *
+     * 由 [MonitorViewModel]（UI 按钮状态 + 日志 Tab）与 [TaskService]（前台服务保活）实现。
      */
     interface TaskListener {
-        fun onTaskStarted(task: TaskInfo)
-        fun onTaskOutput(task: TaskInfo, line: String)
-        fun onTaskCompleted(task: TaskInfo)
-        fun onTaskStopped(task: TaskInfo)
-        fun onTaskError(task: TaskInfo, error: String)
+        fun onTaskStarted(taskId: String, taskName: String)
+        fun onTaskOutput(taskId: String, line: String)
+        fun onTaskCompleted(taskId: String)
+        fun onTaskStopped(taskId: String, reason: String)
+        fun onTaskError(taskId: String, error: String)
     }
 
     /**
@@ -55,231 +116,141 @@ object TaskManager {
         listeners.remove(listener)
     }
 
-    /**
-     * 提交并执行任务
-     * @param name 任务名称
-     * @param command 命令内容（命令/sh脚本路径/adb命令）
-     * @param type 任务类型
-     * @param useShizuku 是否使用Shizuku权限
-     * @param displayId 虚拟显示器 ID（>0 时注入 AUTOBOT_VD_DISPLAY_ID 环境变量，
-     *                  脚本中可通过 am start --display $AUTOBOT_VD_DISPLAY_ID 启动 App 到 VD）
-     * @param extraEnv 附加环境变量（除 displayId 注入外）
-     * @return 任务ID
-     */
-    fun submitTask(
-        name: String,
-        command: String,
-        type: TaskType = TaskType.COMMAND,
-        useShizuku: Boolean = true,
-        displayId: Int = -1,
-        extraEnv: Map<String, String> = emptyMap()
-    ): String {
-        // 组合环境变量：displayId > 0 时注入 AUTOBOT_VD_DISPLAY_ID
-        val env: Map<String, String> = buildMap {
-            putAll(extraEnv)
-            if (displayId > 0) {
-                put("AUTOBOT_VD_DISPLAY_ID", displayId.toString())
-            }
-        }
-        val task = TaskInfo(
-            name = name,
-            command = command,
-            type = type,
-            useShizuku = useShizuku,
-            displayId = displayId,
-            env = env
-        )
-
-        // 每一个任务独立一个取消句柄。外部 stopTask(id) 会调 cancelHandle.cancel()，
-        // 让 ShellExecutor.drainProcessStreams 立即 process.destroy 子进程。
-        val cancelHandle = ShellExecutor.CancelHandle()
-
-        val job = coroutineScope.launch {
-            executeTaskInternal(task, cancelHandle)
-        }
-
-        runningTasks[task.id] = Triple(task, job, cancelHandle)
-        taskHistory.add(0, task)
-
-        // 通知任务开始
-        task.status = TaskStatus.RUNNING
-        listeners.forEach { it.onTaskStarted(task) }
-
-        return task.id
-    }
+    // ===== TaskExecutor 上报入口 =====
 
     /**
-     * 任务执行内部方法
+     * 任务开始通知（由 TaskExecutor.submit 调用）
      *
-     * 关键：调用 ShellExecutor 流式 API，stdout/stderr 每一行
-     *       1. 追加到 task.output 保留历史
-     *       2. 通过 TaskListener.onTaskOutput 通知所有观察者（UI 实时日志显示）
+     * - 记录到 runningTasks + taskHistory
+     * - 通知所有 listener（UI 按钮变红 + 前台服务启动）
+     */
+    fun notifyStarted(taskId: String, taskName: String) {
+        val info = RunningTaskInfo(id = taskId, name = taskName)
+        synchronized(runningTasks) {
+            runningTasks[taskId] = info
+            taskHistory.add(0, info)
+        }
+        Log.i(TAG, "Task started: $taskName (id=$taskId)")
+        listeners.forEach { runCatching { it.onTaskStarted(taskId, taskName) } }
+    }
+
+    /**
+     * 任务输出日志通知（由 TaskExecutor 在每个 action 执行前后调用）
      *
-     * @param cancel 任务取消句柄：外部 stopTask(taskId) → cancel.cancel() → process.destroy
+     * - 追加到 logBuffer（最多保留 LOG_MAX_LINES 行）
+     * - 通知所有 listener 实时刷新 UI 日志区
      */
-    private suspend fun executeTaskInternal(task: TaskInfo, cancel: ShellExecutor.CancelHandle) {
-        try {
-            // 统一给每行加「时间戳 + stdout/stderr」前缀，便于日志观察
-            val prefix = "[${task.id.substring(0, 4)}] "
-            val onOut: (String) -> Unit = { line ->
-                task.output.append("$prefix[OUT] $line\n")
-                listeners.forEach { it.onTaskOutput(task, "[OUT] $line") }
+    fun notifyOutput(taskId: String, line: String) {
+        synchronized(logLock) {
+            logBuffer.add(line)
+            while (logBuffer.size > LOG_MAX_LINES) {
+                logBuffer.removeAt(0)
             }
-            val onErr: (String) -> Unit = { line ->
-                task.output.append("$prefix[ERR] $line\n")
-                listeners.forEach { it.onTaskOutput(task, "[ERR] $line") }
-            }
-
-            val exitCode = when (task.type) {
-                TaskType.COMMAND -> {
-                    ShellExecutor.executeStreaming(
-                        task.command, task.useShizuku, task.env,
-                        cancel = cancel,
-                        onStdoutLine = onOut,
-                        onStderrLine = onErr
-                    )
-                }
-                TaskType.SCRIPT -> {
-                    ShellExecutor.executeScriptStreaming(
-                        task.command, task.useShizuku, task.env,
-                        cancel = cancel,
-                        onStdoutLine = onOut,
-                        onStderrLine = onErr
-                    )
-                }
-                TaskType.ADB -> {
-                    ShellExecutor.executeStreaming(
-                        task.command, task.useShizuku, task.env,
-                        cancel = cancel,
-                        onStdoutLine = onOut,
-                        onStderrLine = onErr
-                    )
-                }
-            }
-
-            if (task.status == TaskStatus.STOPPED) {
-                return
-            }
-
-            // exitCode == -3 是 ShellExecutor 新语义：外部取消（已经 process.destroy 过）
-            // 直接按"停止"流程走，不要当成错误。
-            if (exitCode == -3 || cancel.isRequested()) {
-                task.status = TaskStatus.STOPPED
-                task.endTime = System.currentTimeMillis()
-                runningTasks.remove(task.id)
-                listeners.forEach { it.onTaskStopped(task) }
-                return
-            }
-
-            task.exitCode = exitCode
-            task.status = if (exitCode == 0) TaskStatus.COMPLETED else TaskStatus.ERROR
-            task.endTime = System.currentTimeMillis()
-
-            // 从运行中移除
-            runningTasks.remove(task.id)
-
-            if (exitCode == 0) {
-                listeners.forEach { it.onTaskCompleted(task) }
-            } else {
-                val msg = "Exit code $exitCode"
-                listeners.forEach { it.onTaskError(task, msg) }
-            }
-
-        } catch (e: Exception) {
-            if (task.status == TaskStatus.STOPPED) {
-                return
-            }
-            // job.cancel() 会抛 CancellationException；此时再配合 cancel.cancel() 状态
-            // 说明用户主动停止，按"停止"流程记日志。
-            if (cancel.isRequested()) {
-                task.status = TaskStatus.STOPPED
-                task.endTime = System.currentTimeMillis()
-                runningTasks.remove(task.id)
-                listeners.forEach { it.onTaskStopped(task) }
-                return
-            }
-            task.status = TaskStatus.ERROR
-            task.endTime = System.currentTimeMillis()
-            val errLine = "[EXCEPTION] ${e.message ?: "Unknown error"}"
-            task.output.append(errLine).append("\n")
-            runningTasks.remove(task.id)
-            listeners.forEach { it.onTaskOutput(task, errLine) }
-            listeners.forEach { it.onTaskError(task, e.message ?: "Unknown error") }
         }
+        listeners.forEach { runCatching { it.onTaskOutput(taskId, line) } }
     }
 
     /**
-     * 停止指定任务
-     *   1) CancelHandle.cancel() → 立刻 destroy sh Process（脚本子进程也被杀）
-     *   2) 再 cancelAndJoin 协程（双重保险）
+     * 任务完成通知
      */
-    fun stopTask(taskId: String): Boolean {
-        val triple = runningTasks[taskId] ?: return false
-        val (task, job, cancelHandle) = triple
-
-        task.status = TaskStatus.STOPPED
-        task.endTime = System.currentTimeMillis()
-
-        // 先让 ShellExecutor 里 process 立刻停（否则只 cancelJob，sh 脚本还会继续跑）
-        cancelHandle.cancel()
-
-        coroutineScope.launch {
-            try {
-                job.cancelAndJoin()
-            } catch (_: Exception) {
-                // 忽略取消时的异常
+    fun notifyCompleted(taskId: String) {
+        val info = synchronized(runningTasks) {
+            runningTasks.remove(taskId)?.let {
+                it.copy(status = TaskStatus.COMPLETED, endTimeMs = System.currentTimeMillis())
+            }?.also { updated ->
+                // 同步更新 history 第一条（如果有）
+                val idx = taskHistory.indexOfFirst { it.id == taskId }
+                if (idx >= 0) taskHistory[idx] = updated
             }
-            runningTasks.remove(taskId)
-            listeners.forEach { it.onTaskStopped(task) }
-        }
-
-        return true
+        } ?: return
+        Log.i(TAG, "Task completed: ${info.name} (dur=${info.getDurationText()})")
+        listeners.forEach { runCatching { it.onTaskCompleted(taskId) } }
     }
 
     /**
-     * 停止所有运行中的任务（UI 上「红色停止」按钮一键停止用）
+     * 任务停止通知（用户主动点红色停止按钮）
+     */
+    fun notifyStopped(taskId: String, reason: String) {
+        val info = synchronized(runningTasks) {
+            runningTasks.remove(taskId)?.let {
+                it.copy(status = TaskStatus.STOPPED, endTimeMs = System.currentTimeMillis(), errorMessage = reason)
+            }?.also { updated ->
+                val idx = taskHistory.indexOfFirst { it.id == taskId }
+                if (idx >= 0) taskHistory[idx] = updated
+            }
+        } ?: return
+        Log.i(TAG, "Task stopped: ${info.name} (reason=$reason)")
+        listeners.forEach { runCatching { it.onTaskStopped(taskId, reason) } }
+    }
+
+    /**
+     * 任务出错通知
+     */
+    fun notifyError(taskId: String, error: String) {
+        val info = synchronized(runningTasks) {
+            runningTasks.remove(taskId)?.let {
+                it.copy(status = TaskStatus.ERROR, endTimeMs = System.currentTimeMillis(), errorMessage = error)
+            }?.also { updated ->
+                val idx = taskHistory.indexOfFirst { it.id == taskId }
+                if (idx >= 0) taskHistory[idx] = updated
+            }
+        } ?: return
+        Log.e(TAG, "Task error: ${info.name} (err=$error)")
+        listeners.forEach { runCatching { it.onTaskError(taskId, error) } }
+    }
+
+    /**
+     * 停止所有运行中的任务（UI 红色「停止」按钮一键停止用）
+     *
+     * 转发到 [TaskExecutor.stop]（新版不再持有 sh Process，必须由 TaskExecutor 协程级取消）
+     *
      * @return 实际终止的任务数量
      */
     fun stopAllTasks(): Int {
-        val ids = runningTasks.keys.toList()
-        var count = 0
-        ids.forEach { if (stopTask(it)) count++ }
+        val count: Int
+        synchronized(runningTasks) {
+            count = runningTasks.size
+        }
+        if (count > 0) {
+            TaskExecutor.stop()
+        }
         return count
     }
 
     /**
-     * 获取所有运行中的任务
+     * 获取所有运行中的任务（用于前台服务通知文案）
      */
-    fun getRunningTasks(): List<TaskInfo> {
-        return runningTasks.values.map { it.first }.toList()
-    }
-
-    /**
-     * 获取历史任务（包括运行中）
-     */
-    fun getAllTasks(): List<TaskInfo> {
-        return taskHistory.toList()
-    }
-
-    /**
-     * 获取任务详情
-     */
-    fun getTask(taskId: String): TaskInfo? {
-        return runningTasks[taskId]?.first ?: taskHistory.find { it.id == taskId }
-    }
-
-    /**
-     * 清空历史任务（保留运行中）
-     */
-    fun clearHistory() {
-        val runningIds = runningTasks.keys.toSet()
-        taskHistory.removeAll { it.id !in runningIds }
+    fun getRunningTasks(): List<RunningTaskInfo> {
+        return synchronized(runningTasks) { runningTasks.values.toList() }
     }
 
     /**
      * 是否有运行中的任务
      */
     fun hasRunningTasks(): Boolean {
-        return runningTasks.isNotEmpty()
+        return synchronized(runningTasks) { runningTasks.isNotEmpty() }
+    }
+
+    /**
+     * 清空日志缓冲（UI「清空」按钮调用）
+     */
+    fun clearLogs() {
+        synchronized(logLock) {
+            logBuffer.clear()
+        }
+    }
+
+    /**
+     * 获取日志缓冲快照（UI 启动时恢复显示用）
+     */
+    fun getLogs(): List<String> {
+        return synchronized(logLock) { logBuffer.toList() }
+    }
+
+    /**
+     * 获取历史任务（包括运行中）—— 仅供扩展用，UI 当前未展示
+     */
+    fun getAllTasks(): List<RunningTaskInfo> {
+        return synchronized(runningTasks) { taskHistory.toList() }
     }
 }
