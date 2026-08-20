@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  roundIcon 资源：被有些桌面 launcher（部分 ROM、手表、圆形 mask）选中时使用。
-  配置与 ic_launcher.xml 完全一致。系统圆形 mask 会自动裁掉渐变圆角方的角 → 变圆。
+  roundIcon 资源：部分 launcher / 圆形 mask 设备使用。
+  配置与 ic_launcher.xml 完全一致，系统圆形 mask 会自动裁掉外圈。
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

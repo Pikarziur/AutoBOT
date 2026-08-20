@@ -325,11 +325,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        // 若 VD 未启动目标 App，先启动+隔离淘宝
+        // 若 VD 未启动目标 App，先启动+隔离淘宝（懒加载：执行任务时自动补拉起）
         val targetPkg = _vdTargetPackage.value ?: AppManager.DEFAULT_PACKAGE_TAOBAO
         val needsRelaunch = _vdTargetPackage.value == null
         if (needsRelaunch) {
-            _executeMessage.value = "自动启动目标 App (淘宝) 到虚拟显示器，请稍候..."
+            // 启动过程走『日志 Tab』，不弹 Toast 遮挡 VD 预览
             appendLauncherLog("[${stamp()}] ⟶ 检测到 VD 前台无目标 App，自动启动到 display=$vdDisplayId")
         }
 
@@ -363,7 +363,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                     scope = viewModelScope,
                     onLog = { line -> TaskManager.notifyOutput(taskFile.id, line) }
                 )
-                _executeMessage.value = "任务已启动：${taskFile.name}（映射到显示器 #$vdDisplayId）"
+                // 启动成功的反馈走『日志 Tab』的横幅（╔ 🚀 任务启动 ╗），不再弹 Toast 遮挡 VD 画面
                 Log.i(TAG, "TaskExecutor.submit: ${taskFile.name}, vd=$vdDisplayId, " +
                         "actions=${taskFile.actions.size}")
             } catch (e: Exception) {

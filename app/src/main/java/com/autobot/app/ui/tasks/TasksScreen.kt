@@ -44,15 +44,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.lerp as lerpColor
-import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -83,6 +81,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -305,6 +304,79 @@ fun TasksScreen(
                     previewContent()
                 }
             )
+        }
+
+        // ★ 浮动停止按钮：任务执行时悬浮在页面最上层（仅小窗模式）
+        // 红色圆形 + 白色正方形 + 投影，出现在右下角；点击停止任务后恢复原样
+        FloatingStopButton(
+            visible = isExecuting && !isFullscreen,
+            onClick = { vm.stopExecuting() }
+        )
+    }
+}
+
+/**
+ * 浮动停止按钮（Floating Action Button 风格）
+ *
+ * 任务执行时从屏幕右下角浮现的红色圆形按钮：
+ *   - 红色圆形背景（56dp，#FF3B30）
+ *   - 中间白色正方形（20dp，代表 Stop 符号）
+ *   - 带 8dp 投影形成悬浮感，z-order 高于页面所有内容
+ *   - 出现/消失动画：scale + alpha 双向动画
+ *
+ * 触发条件：isExecuting=true 且非全屏模式
+ * 消失条件：任务完成 / 任务出错 / 用户点击停止 / 进入全屏
+ */
+@Composable
+private fun FloatingStopButton(
+    visible: Boolean,
+    onClick: () -> Unit
+) {
+    // 出现动画：scale 0→1（弹性缩放），alpha 0→1（淡入）
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        label = "fabScale"
+    )
+    val alpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "fabAlpha"
+    )
+
+    // scale 降到接近 0 时不再渲染，避免接收点击事件
+    if (scale > 0.01f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(end = 20.dp, bottom = 100.dp),
+            contentAlignment = Alignment.BottomEnd
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .alpha(alpha)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .shadow(
+                        elevation = 8.dp,
+                        shape = CircleShape,
+                        clip = false
+                    )
+                    .clip(CircleShape)
+                    .background(Color(0xFFFF3B30))
+                    .clickable(onClick = onClick),
+                contentAlignment = Alignment.Center
+            ) {
+                // 白色正方形（Stop 符号）
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(Color.White)
+                )
+            }
         }
     }
 }
@@ -978,97 +1050,58 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         // ---------- 2. 弹性留白（把按钮顶到底部） ----------
         Spacer(modifier = Modifier.weight(1f))
 
-        // ---------- 3. 底部执行任务按钮（形变悬浮按钮） ----------
-        // 点击「执行任务」后，按钮固定右侧边缘，从左向右平移缩放：
-        //   阶段1（morph 0→0.5）：宽度满宽→48dp、圆角 12dp→24dp（正圆），执行内容淡出
-        //   阶段2（morph 0.5→1）：颜色 primary→红色、显示 Stop 正方形图标、投影 0dp→8dp（悬浮感）
-        // 再次点击（停止态）或任务结束时，形变对称还原为宽按钮。
+        // ---------- 3. 底部执行任务按钮 ----------
+        // 点击「执行任务」后，按钮淡出 + 缩小消失；
+        // 浮动停止按钮（FloatingStopButton）在页面最上层右下角浮现接管。
+        // 任务结束或点击红色停止按钮 → 浮动按钮消失，此按钮淡入恢复。
         val canExecute = !isExecuting
-        val isStopButton = isExecuting
         val executeLabel = "执行任务"
 
-        // 整体形变进度：0=执行态宽按钮，1=停止态圆形悬浮按钮（对称双向动画）
-        val morphProgress by animateFloatAsState(
-            targetValue = if (isStopButton) 1f else 0f,
-            animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
-            label = "executeButtonMorph"
+        // 执行中时按钮淡出 + 缩小（让位给浮动停止按钮）
+        val buttonAlpha by animateFloatAsState(
+            targetValue = if (isExecuting) 0f else 1f,
+            animationSpec = tween(300, easing = FastOutSlowInEasing),
+            label = "executeButtonAlpha"
         )
-        // 阶段1 进度：缩放成圆形（前半段）
-        val shrinkProgress = (morphProgress / 0.5f).coerceIn(0f, 1f)
-        // 阶段2 进度：变红 + 正方形 + 投影（后半段，呼应"变成圆形后再变红"）
-        val redProgress = ((morphProgress - 0.5f) / 0.5f).coerceIn(0f, 1f)
+        val buttonScale by animateFloatAsState(
+            targetValue = if (isExecuting) 0.3f else 1f,
+            animationSpec = tween(300, easing = FastOutSlowInEasing),
+            label = "executeButtonScale"
+        )
 
-        // 外层 BoxWithConstraints 右对齐：按钮缩放时右侧边缘保持固定
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = contentHPadding, vertical = 12.dp),
             contentAlignment = Alignment.CenterEnd
         ) {
-            // 宽度：满宽 → 48dp（与高度相等构成正圆）
-            val animatedWidth = lerp(maxWidth, 48.dp, shrinkProgress)
-            // 圆角：12dp → 24dp（= 48/2，正圆）
-            val animatedCorner = lerp(12.dp, 24.dp, shrinkProgress)
-            // 容器颜色：primary → 红色 #FF3B30（阶段2 才变色）
-            val containerColor = lerpColor(
-                MaterialTheme.colorScheme.primary,
-                Color(0xFFFF3B30),
-                redProgress
-            )
-            // 投影：0dp → 8dp（阶段2 浮现，形成悬浮感）
-            val animatedElevation = lerp(0.dp, 8.dp, redProgress)
-            // 内容水平内边距：16dp → 0dp（圆形时让正方形图标完全居中）
-            val animatedHPad = lerp(16.dp, 0.dp, shrinkProgress)
-
             Button(
-                onClick = { if (isStopButton) vm.stopExecuting() else vm.executeTask() },
-                // 停止按钮永远可点击；执行按钮走 canExecute 判定
-                enabled = isStopButton || canExecute,
+                onClick = { vm.executeTask() },
+                enabled = canExecute,
                 modifier = Modifier
                     .height(48.dp)
-                    .width(animatedWidth)
-                    .shadow(
-                        elevation = animatedElevation,
-                        shape = RoundedCornerShape(animatedCorner),
-                        clip = false
-                    ),
-                shape = RoundedCornerShape(animatedCorner),
+                    .widthIn(max = 220.dp)
+                    .fillMaxWidth()
+                    .alpha(buttonAlpha)
+                    .graphicsLayer {
+                        scaleX = buttonScale
+                        scaleY = buttonScale
+                    },
+                shape = RoundedCornerShape(24.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = containerColor,
+                    containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = Color.White,
-                    disabledContainerColor = containerColor.copy(alpha = 0.5f),
-                    disabledContentColor = Color.White.copy(alpha = 0.85f)
-                ),
-                contentPadding = PaddingValues(horizontal = animatedHPad)
+                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                )
             ) {
-                // 内容叠加：执行态（PlayArrow + 文字）与停止态（Stop 正方形）交叉淡入淡出
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // 执行态内容：阶段1 内淡出
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.alpha((1f - shrinkProgress).coerceIn(0f, 1f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(executeLabel)
-                    }
-                    // 停止态内容：阶段2 内淡入的 Stop 正方形图标
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Filled.Stop,
+                        imageVector = Icons.Filled.PlayArrow,
                         contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .alpha(redProgress.coerceIn(0f, 1f))
+                        modifier = Modifier.size(18.dp)
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Text(executeLabel)
                 }
             }
         }
@@ -1089,8 +1122,9 @@ private fun TasksTabContent(vm: MonitorViewModel) {
  *
  * 特性：
  *   - LazyColumn 逐行渲染，新日志到达后自动滚动到底
- *   - 右上角「清空」按钮调用 vm.clearLogs()
- *   - 不同状态用不同颜色区分（绿/红/蓝/橙/黑）
+ *   - 头部计数徽章 + 图标按钮（复制/清空）
+ *   - 日志使用 Monospace 字体，对齐 emoji 前缀更整齐
+ *   - 不同状态用不同颜色 + emoji 区分（绿/红/蓝/橙/黑）
  *   - 最多 500 行（由 VM 限制），避免内存无限增长
  */
 @Composable
@@ -1124,7 +1158,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
         // ★统一水平 padding，与任务 Tab 保持一致，不让内容顶到卡片边
         val contentHPadding = 20.dp
 
-        // ---------- 头部：标题 + [复制][清空]（复制按钮紧挨着清空按钮的左侧，两者都在右端） ----------
+        // ---------- 头部：标题 + 计数徽章 + [复制][清空] ----------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1132,15 +1166,36 @@ private fun LogsTabContent(vm: MonitorViewModel) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "执行日志（${logs.size}）",
+                text = "执行日志",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
+            Spacer(Modifier.width(8.dp))
+            // 计数徽章：圆形灰底 + 数字，实时反映日志条数
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (logs.isEmpty()) MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${logs.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (logs.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
             Spacer(Modifier.weight(1f))
             // ★复制按钮：靠着「清空」按钮的左侧，复制完整日志（空列表时禁用）
             TextButton(
                 onClick = { copyAllLogs() },
-                enabled = logs.isNotEmpty()
+                enabled = logs.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.ContentCopy,
@@ -1148,33 +1203,54 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("复制")
+                Text("复制", style = MaterialTheme.typography.labelMedium)
             }
             Spacer(Modifier.width(4.dp))
-            TextButton(onClick = { vm.clearLogs() }) {
+            TextButton(
+                onClick = { vm.clearLogs() },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("清空")
+                Text("清空", style = MaterialTheme.typography.labelMedium)
             }
         }
 
         // ---------- 日志列表 ----------
         if (logs.isEmpty()) {
+            // 美化空状态：图标 + 提示文字 + 引导副文
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = contentHPadding),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "暂无日志",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "暂无日志",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "执行任务后日志将显示在此",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -1186,11 +1262,15 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                 items(logs) { line ->
                     Text(
                         text = line,
-                        style = MaterialTheme.typography.bodySmall,
+                        // ★Monospace 字体：让 [01/60] 序号、坐标、✓ 完成行对齐更整齐
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = androidx.compose.ui.unit.TextUnit(11f, androidx.compose.ui.unit.TextUnitType.Sp)
+                        ),
                         color = logLineColor(line),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp)
+                            .padding(vertical = 1.dp)
                     )
                 }
             }
@@ -1200,19 +1280,25 @@ private fun LogsTabContent(vm: MonitorViewModel) {
 
 /**
  * 日志行颜色：根据内容标记区分状态
- * - ✓ 完成 → 绿色
- * - ✗ 出错 → 红色
- * - ⟶ 启动 → 蓝色
+ * - ✓ 完成 / ✅ 全部完成 → 绿色
+ * - ❌ 出错 → 红色
+ * - 🚀 启动 / ⟶ 启动 → 蓝色
  * - ⏹ 停止 → 橙色
+ * - 🔄 分组 / ━━━ 分隔线 → 主色
+ * - ⏳ 等待中 → 灰色辅助
  * - 其他 → 主文字色
  */
 @Composable
 private fun logLineColor(line: String): Color {
     return when {
-        line.contains("✓") -> Color(0xFF4CAF50)
-        line.contains("✗") -> MaterialTheme.colorScheme.error
-        line.contains("⟶") -> MaterialTheme.colorScheme.primary
+        line.contains("✓") || line.contains("✅") -> Color(0xFF4CAF50)
+        line.contains("❌") || line.contains("✗") -> MaterialTheme.colorScheme.error
+        line.contains("🚀") || line.contains("⟶") -> MaterialTheme.colorScheme.primary
         line.contains("⏹") -> Color(0xFFFF9800)
+        line.contains("🔄") || line.startsWith("━") -> MaterialTheme.colorScheme.primary
+        line.contains("⏳") -> MaterialTheme.colorScheme.onSurfaceVariant
+        line.startsWith("║") || line.startsWith("╔") || line.startsWith("╚") ->
+            Color(0xFF2B6BCA)  // 启动横幅用主色
         else -> MaterialTheme.colorScheme.onSurface
     }
 }

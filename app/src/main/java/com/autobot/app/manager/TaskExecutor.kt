@@ -179,32 +179,33 @@ object TaskExecutor {
         compositionService: CompositionService,
         onLog: (String) -> Unit
     ) {
-        val tag = "[$idx/$total]"
+        // 序号补零对齐：[01/60] 比 [1/60] 在多行时对齐更整齐
+        val tag = "[${idx.toString().padStart(total.toString().length, '0')}/$total]"
         val startMs = System.currentTimeMillis()
         when (action.type) {
             TaskActionType.TAP -> {
-                onLog("$tag 👆 点击 (${action.x}, ${action.y})")
+                onLog("$tag 👆 点击    (${action.x}, ${action.y})")
                 compositionService.injectTouchDown(action.x, action.y)
                 sleepInterruptible(50L)  // 按住 50ms 模拟真人
                 compositionService.injectTouchUp(action.x, action.y)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
             TaskActionType.SWIPE -> {
-                onLog("$tag ↔  滑动 (${action.x}, ${action.y}) → (${action.endX}, ${action.endY}) · ${action.durationMs}ms")
+                onLog("$tag ↔  滑动    (${action.x}, ${action.y}) → (${action.endX}, ${action.endY}) · ${action.durationMs}ms")
                 doSwipe(action.x, action.y, action.endX, action.endY,
                         action.durationMs, null, null, compositionService)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
             TaskActionType.WAIT -> {
-                onLog("$tag ⏳ 等待 ${action.ms}ms ...")
+                onLog("$tag ⏳ 等待    ${action.ms}ms ...")
                 sleepInterruptible(action.ms)
-                onLog("     ✓ 等待结束 · 实际 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 等待结束 · 实际 ${System.currentTimeMillis() - startMs}ms")
             }
             TaskActionType.BACK -> {
                 onLog("$tag 🔙 返回键")
                 compositionService.injectBack()
                 sleepInterruptible(80L)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
         }
     }
@@ -236,9 +237,9 @@ object TaskExecutor {
         val rnd = kotlin.random.Random
 
         onLog("📋 程序化配置：${program.groups}组 × ${program.actions.size}动作")
-        onLog("   ↳ 延迟范围：${program.delayMinMs}~${program.delayMaxMs}ms")
-        onLog("   ↳ 坐标范围：($xMin,$yMin) ~ ($xMax,$yMax)")
-        onLog("   ↳ 组内打乱：${if (program.shuffleGroup) "是" else "否"}")
+        onLog("   ├─ 延迟范围：${program.delayMinMs}~${program.delayMaxMs}ms")
+        onLog("   ├─ 坐标范围：($xMin,$yMin) ~ ($xMax,$yMax)")
+        onLog("   └─ 组内打乱：${if (program.shuffleGroup) "是" else "否"}")
         onLog("")
 
         for (g in 1..program.groups) {
@@ -249,11 +250,11 @@ object TaskExecutor {
             if (program.shuffleGroup) groupActions.shuffle(rnd)
 
             // ── 分组横幅 ──
-            onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             onLog("🔄 第 $g/${program.groups} 组")
-            onLog("   ↳ 执行顺序：${
+            onLog("   └─ 顺序：${
                 groupActions.joinToString(" → ") { it.label.ifBlank { it.type.name } }}")
-            onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            onLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             for ((idx, act) in groupActions.withIndex()) {
                 if (cancelFlag.get()) return
@@ -298,7 +299,8 @@ object TaskExecutor {
         val midX = (xMin + xMax) / 2
         val midY = (yMin + yMax) / 2
         val label = act.label.ifBlank { act.type.name }
-        val tag = "[$idx/$total]"
+        // 序号补零对齐，与静态任务一致
+        val tag = "[${idx.toString().padStart(total.toString().length, '0')}/$total]"
         val startMs = System.currentTimeMillis()
 
         when (act.type) {
@@ -310,9 +312,9 @@ object TaskExecutor {
                 val endX = (startX + rnd.nextInt(-80, 81)).coerceIn(xMin, xMax)
                 val endY = rnd.nextInt(yMin, midY)
                 onLog("$tag ↔  $label · ${act.durationMs}ms")
-                onLog("     起点 ($startX, $startY) → 终点 ($endX, $endY)")
+                onLog("      └─ ($startX, $startY) → ($endX, $endY)")
                 doSwipe(startX, startY, endX, endY, act.durationMs, null, null, cs)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
             ProgramActionType.ARC_SWIPE_LEFT_UP -> {
                 // 右下→左上，控制点偏左（左凸）
@@ -323,10 +325,10 @@ object TaskExecutor {
                 val ctrlX = (startX + endX) / 2 - rnd.nextInt(80, 181)
                 val ctrlY = (startY + endY) / 2
                 onLog("$tag 🔄 $label · ${act.durationMs}ms")
-                onLog("     起点 ($startX, $startY) → 终点 ($endX, $endY)")
-                onLog("     控制点 ($ctrlX, $ctrlY) · 左凸弧")
+                onLog("      └─ ($startX, $startY) → ($endX, $endY) · 左凸弧")
+                onLog("      └─ 控制点 ($ctrlX, $ctrlY)")
                 doSwipe(startX, startY, endX, endY, act.durationMs, ctrlX, ctrlY, cs)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
             ProgramActionType.ARC_SWIPE_RIGHT_UP -> {
                 // 左下→右上，控制点偏右（右凸）
@@ -337,10 +339,10 @@ object TaskExecutor {
                 val ctrlX = (startX + endX) / 2 + rnd.nextInt(80, 181)
                 val ctrlY = (startY + endY) / 2
                 onLog("$tag 🔄 $label · ${act.durationMs}ms")
-                onLog("     起点 ($startX, $startY) → 终点 ($endX, $endY)")
-                onLog("     控制点 ($ctrlX, $ctrlY) · 右凸弧")
+                onLog("      └─ ($startX, $startY) → ($endX, $endY) · 右凸弧")
+                onLog("      └─ 控制点 ($ctrlX, $ctrlY)")
                 doSwipe(startX, startY, endX, endY, act.durationMs, ctrlX, ctrlY, cs)
-                onLog("     ✓ 完成 · 耗时 ${System.currentTimeMillis() - startMs}ms")
+                onLog("      └─ ✓ 完成 · ${System.currentTimeMillis() - startMs}ms")
             }
         }
     }
@@ -407,9 +409,9 @@ object TaskExecutor {
         label: String = "等待"
     ) {
         val startMs = System.currentTimeMillis()
-        onLog("⏳ $label ${ms}ms ...")
+        onLog("      ⏳ $label ${ms}ms ...")
         sleepInterruptible(ms)
-        onLog("     ✓ $label 结束 · 实际 ${System.currentTimeMillis() - startMs}ms")
+        onLog("      └─ ✓ $label 结束 · 实际 ${System.currentTimeMillis() - startMs}ms")
     }
 
     /**
