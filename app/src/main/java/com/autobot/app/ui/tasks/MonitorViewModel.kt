@@ -21,9 +21,12 @@ import com.autobot.app.recognition.RecognitionExecutor
 import com.autobot.app.recognition.RecognitionMode
 import com.autobot.app.service.CompositionService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -88,8 +91,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isExecuting = MutableStateFlow(false)
     val isExecuting: StateFlow<Boolean> = _isExecuting.asStateFlow()
 
+    // _executeMessage 保留为 VM 内部使用（UI 已迁移到 snackbar）
     private val _executeMessage = MutableStateFlow<String?>(null)
     val executeMessage: StateFlow<String?> = _executeMessage.asStateFlow()
+
+    private val _snackbarMessage = Channel<String>(extraBufferCapacity = 8)
+    val snackbarMessage: Flow<String> = _snackbarMessage.receiveAsFlow()
+
+    // 统一的 toast/snackbar 消息发送入口（替代所有 _executeMessage.value = msg）
+    fun showSnack(msg: String) {
+        _snackbarMessage.trySend(msg)
+    }
 
     private val _scriptLogs = MutableStateFlow<List<String>>(emptyList())
     val scriptLogs: StateFlow<List<String>> = _scriptLogs.asStateFlow()
@@ -157,7 +169,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun pushExecuteMessage(msg: String) {
-        _executeMessage.value = msg
+        showSnack(msg)
     }
 
     init {
@@ -207,7 +219,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun consumeExecuteMessage() {
-        _executeMessage.value = null
+        _executeMessage.value = null  // 清空旧 StateFlow（保留兼容）
     }
 
     /** */
@@ -219,25 +231,25 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         val vdDisplayId = compositionService.displayId
         if (vdDisplayId <= 0) {
-            _executeMessage.value = "请先点击播放按钮启动虚拟显示器"
+            showSnack("请先点击播放按钮启动虚拟显示器")
             return
         }
 
         val taskId = _selectedTaskFileId.value
         if (taskId == null) {
-            _executeMessage.value = "请先在下拉列表选择一个任务"
+            showSnack("请先在下拉列表选择一个任务")
             return
         }
         val taskFile = TaskFileManager.getTask(taskId)
         if (taskFile == null) {
-            _executeMessage.value = "任务不存在，可能已被删除"
+            showSnack("任务不存在，可能已被删除")
             refreshTaskFiles()
             return
         }
 
         _shizukuGranted.value = ShizukuManager.isShizukuGranted()
         if (!_shizukuGranted.value) {
-            _executeMessage.value = "Shizuku 未授权，无法注入 MotionEvent"
+            showSnack("Shizuku 未授权，无法注入 MotionEvent")
             return
         }
 
@@ -256,7 +268,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                         packageName = targetPkg
                     )
                     if (!ok) {
-                        _executeMessage.value = "目标 App 启动失败，任务中止：$msg"
+                        showSnack("目标 App 启动失败，任务中止：$msg")
                         appendLauncherLog("[${stamp()}] ✗ 任务中止：目标 App 未启动到 VD：$msg")
                         _isExecuting.value = false
                         return@launch
@@ -273,7 +285,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                         "actions=${taskFile.actions.size}")
             } catch (e: Exception) {
                 Log.e(TAG, "executeTask failed", e)
-                _executeMessage.value = "任务启动失败：${e.message}"
+                showSnack("任务启动失败：${e.message}")
                 _isExecuting.value = false
             }
             // 成功路径不重置 _isExecuting：交给 taskListener 在 onTaskCompleted/Stopped/Error 时同步
@@ -291,7 +303,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         appendLauncherLog("[${stamp()}] ⏹ 用户点击停止：已请求结束 $cnt 个任务")
         // 不在此处查询 _isExecuting：TaskExecutor.stop 的 cancelAndJoin 在独立协程中异步执行，
         // 此处查 isExecuting() 可能仍返回 true（竞态）。按钮状态交给 listener.onTaskStopped 置 false。
-        _executeMessage.value = if (cnt > 0) "已停止任务" else "当前没有运行中的任务"
+        showSnack(if (cnt > 0) "已停止任务" else "当前没有运行中的任务")
     }
 
     fun startRecognitionTask(
@@ -303,11 +315,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     ) {
         val vdDisplayId = compositionService.displayId
         if (vdDisplayId <= 0) {
-            _executeMessage.value = "虚拟显示器未启动，请先点击播放按钮"
+            showSnack("虚拟显示器未启动，请先点击播放按钮")
             return
         }
         if (RecognitionExecutor.isExecuting()) {
-            _executeMessage.value = "识别任务已在执行中"
+            showSnack("识别任务已在执行中")
             return
         }
 
@@ -357,7 +369,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 val msg = errMsg.ifBlank { "VirtualDisplay launch failed" }
                 Log.e(TAG, msg)
                 appendLauncherLog("[${stamp()}] ✗ $msg")
-                _executeMessage.value = msg
+                showSnack(msg)
             }
         }
     }
@@ -382,7 +394,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
                 val msg = errMsg.ifBlank { "虚拟显示器切换方向失败，请重试" }
                 Log.e(TAG, "toggleOrientation: restartVirtualDisplay failed: $msg")
                 appendLauncherLog("[${stamp()}] ✗ $msg")
-                _executeMessage.value = msg
+                showSnack(msg)
             }
         }
     }
@@ -394,7 +406,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         if (packageName.isBlank()) {
             val r = false to "未选中有效应用"
             appendLauncherLog("[${stamp()}] ✗ ${r.second}, pkg=$packageName")
-            _executeMessage.value = r.second; return r
+            showSnack(r.second); return r
         }
         val granted = refreshShizukuStatus()
         if (!granted) {
@@ -404,7 +416,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val shortMsg = "Shizuku 未就绪：$detail"
             appendLauncherLog("[${stamp()}] ✗ ${longMsg.replace("\n", "  ")}")
             val r = false to shortMsg
-            _executeMessage.value = r.second; return r
+            showSnack(r.second); return r
         }
 
         val pref = AppManager.getAppPreferredOrientation(context, packageName)
@@ -446,7 +458,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val msg = errMsg.ifBlank { "虚拟显示器启动失败，请确认 Shizuku 已授权" }
             appendLauncherLog("[${stamp()}] ✗ $msg")
             val r = false to msg
-            _executeMessage.value = r.second; return r
+            showSnack(r.second); return r
         }
 
         val maxWait = 8
@@ -462,7 +474,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         if (dId <= 0) {
             val r = false to "虚拟显示器未就绪（displayId=-1），请稍后重试"
             appendLauncherLog("[${stamp()}] ✗ ${r.second}，waited=${waited * 100}ms")
-            _executeMessage.value = r.second; return r
+            showSnack(r.second); return r
         }
 
         val ok = AppManager.launchApp(context, packageName, dId)
@@ -477,12 +489,12 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             val msg = "已启动到虚拟显示器 (${targetW}x${targetH})" +
                     if (moved) "，任务隔离完成" else "，任务隔离跳过"
             val success = true to msg
-            _executeMessage.value = success.second
+            showSnack(success.second)
             appendLauncherLog("[${stamp()}] ✓ 已启动 pkg=$packageName 到 display=$dId（任务隔离结果：$detail）")
             success
         } else {
             val r = false to "App 启动命令失败，请确认目标应用已安装（$packageName）"
-            _executeMessage.value = r.second
+            showSnack(r.second)
             appendLauncherLog("[${stamp()}] ✗ ${r.second}")
             r
         }

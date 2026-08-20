@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +16,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -59,9 +61,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val diagnosis by vm.diagnosis.collectAsStateWithLifecycle()
 
+    // 设置页独立 SnackbarHost：监听 SettingsViewModel.toast，1 秒消失
+    val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         vm.toast.collect { msg ->
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            snackbarHostState.showSnackbar(
+                message = msg,
+                durationMillis = 1000
+            )
         }
     }
 
@@ -82,22 +89,23 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "设置",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "设置",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
 
-            ShizukuCard(
-                diagnosis = diagnosis,
+                ShizukuCard(
+                    diagnosis = diagnosis,
                 onAuthorizeClick = { vm.authorize() },
                 onOpenShizukuClick = { vm.openShizukuApp() }
             )
@@ -109,6 +117,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             )
 
             DeviceInfoCard()
+            }
+
+            // 设置页 Snackbar：1 秒自动消失
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) { data ->
+                Snackbar(snackbarData = data, durationMillis = 1000)
+            }
         }
     }
 }

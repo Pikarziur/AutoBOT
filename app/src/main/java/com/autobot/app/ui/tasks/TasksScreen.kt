@@ -11,7 +11,6 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.widget.ImageView
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -122,18 +121,9 @@ fun TasksScreen(
     var taobaoIcon by remember { mutableStateOf<Drawable?>(null) }
     var launching by remember { mutableStateOf(false) }
 
-    fun buildToastText(full: String): String {
-        val trimmed = full.trim()
-        return if (trimmed.length <= 48) trimmed
-        else "${trimmed.take(44)}…\n（详情切到『日志』查看，可复制）"
-    }
+    // executeMessage 已迁移到全局 Snackbar（MainActivity），此处仅消费掉避免堆积
     LaunchedEffect(executeMessage) {
-        executeMessage?.let { msg ->
-            Toast.makeText(
-                context,
-                buildToastText(msg),
-                Toast.LENGTH_LONG
-            ).show()
+        executeMessage?.let { _ ->
             vm.consumeExecuteMessage()
         }
     }
@@ -983,14 +973,12 @@ private fun LogsTabContent(vm: MonitorViewModel) {
     fun copyAllLogs() {
         val text = logs.joinToString("\n")
         if (text.isBlank()) {
-            Toast.makeText(context, "无日志可复制", Toast.LENGTH_SHORT).show()
+            vm.showSnack("无日志可复制")
             return
         }
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("AutoBOT 执行日志", text))
-        Toast.makeText(context,
-            "已复制 ${logs.size} 行日志到剪贴板",
-            Toast.LENGTH_SHORT).show()
+        vm.showSnack("已复制 ${logs.size} 行日志到剪贴板")
     }
 
     LaunchedEffect(logs.size) {

@@ -21,10 +21,16 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -118,8 +124,27 @@ private fun MainScreen() {
     var currentTabIndex by rememberSaveable { mutableStateOf(1) }
     val currentTab = MainTab.entries.getOrElse(currentTabIndex) { MainTab.TASKS }
 
+    // 全局 Snackbar：监听 VM 的 snackbarMessage Channel，1 秒后自动消失
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        vm.snackbarMessage.collect { msg ->
+            snackbarHostState.showSnackbar(
+                message = msg,
+                durationMillis = 1000  // 1 秒
+            )
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    durationMillis = 1000
+                )
+            }
+        },
         bottomBar = {
             if (!isFullscreen) {
                 BottomNavBar(
