@@ -19,44 +19,10 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 虚拟显示器合成服务（scrcpy/MAA-Meow 同款数据流架构）
+ * 虚拟显示器合成服务
  *
- * ★关键架构（修复 LocalSocket Permission denied）★：
- *   不再使用 LocalServerSocket/LocalSocket abstract namespace。
- *   Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的 abstract socket。
- *   改用 Shizuku.newProcess 返回的 Process 的 stdin/stdout pipe 跨进程通信。
- *
- * ┌─ App 进程（本类）─────────────────────────────────────────────┐
- * │  MonitorViewModel → CompositionService                        │
- * │                                                             │
- * │  step1: Shizuku 授权检查                                      │
- * │  step2: NativeCapturer.prepareFrameBuffer                     │
- * │  step3: ShizukuProcessManager.ensureServerApk                 │
- * │  step4: launchServer() → serverProcess: Process               │
- * │         ↳ stderrDrainThread 持续读 process.errorStream        │
- * │           → Log.i("ServerMain.stderr", line) 写到 logcat     │
- * │  step5: writeMessage(process.outputStream, MSG_CREATE_VD)    │
- * │  step6: readMessage(process.inputStream) → MSG_CREATE_VD_RESP│
- * │         → cachedDisplayId                                    │
- * │  step7: keepAliveThread 循环 write PING (process.outputStream)│
- * │  step8: frameReceiveThread 循环 readMessage(process.inputStream)
- * │         → MSG_FRAME → FramePacket.decodeBitmap                │
- * │         → NativeCapturer.injectExternalFrame(bitmap)          │
- * └───────────────────────────────────────────────────────────────┘
- *          ▲                                           │
- *          │ stdin/stdout pipe + VDProtocol 二进制帧   │
- *          ▼                                           │
- * ┌─ Server 进程（shell uid，ServerMain.main）───────────────────┐
- * │  step1: System.in.read → MSG_CREATE_VD                         │
- * │  step2: Workarounds.apply + FakeContext                        │
- * │  step3: 反射 DisplayManager(Context)                            │
- * │  step4: ImageReader.newInstance(w,h,YUV_420_888,3)             │
- * │  step5: createVirtualDisplay(name,w,h,dpi,reader.surface,f)    │
- * │  step6: ImageReader.onImageAvailable → acquireLatestImage       │
- * │         → YUV planes → compress JPEG → FramePacket             │
- * │         → writeMessage(System.out, MSG_FRAME)                 │
- * │  step7: System.in 循环 read → PING/PONG / RELEASE_VD            │
- * └───────────────────────────────────────────────────────────────┘
+ * 关键架构（修复 LocalSocket Permission denied）：使用 Shizuku.newProcess 返回的 Process 的 stdin/stdout pipe
+ * 跨进程通信（Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的 abstract socket）。
  *
  * 关键修复历史：
  *  1. Surface.writeToParcel + marshall() 失败（含 Binder）→ 改用 server 端 JPEG 传输
@@ -74,8 +40,6 @@ class CompositionService(private val context: Context) {
 
         /**
          * 分辨率预设（默认 1080P，可选 720P 省内存档）
-         *
-         * 真实尺寸与密度都委托给枚举 VdResolutionMode 单点定义，
          * 保证"设置页 → MonitorViewModel → ShellExecutor"都读到同一组值。
          */
         @Deprecated("请改用 VdResolutionMode.resolveCurrent(context) 获取当前生效档位")
@@ -85,7 +49,6 @@ class CompositionService(private val context: Context) {
         @Deprecated("请改用 VdResolutionMode.resolveCurrent(context).dpi")
         const val DEFAULT_DPI = 240
 
-        /** 读取当前生效的 VD 档位：SharedPreferences > 默认 1080P。Service/VM/UI 通用。 */
         @JvmStatic
         fun resolveMode(ctx: Context): VdResolutionMode = VdResolutionMode.readFromPrefs(ctx)
 
@@ -93,28 +56,19 @@ class CompositionService(private val context: Context) {
         private const val PING_INTERVAL_MS = 5_000L
         private const val SERVER_HANDSHAKE_TIMEOUT_MS = 8_000L
         private const val CREATE_VD_RESP_TIMEOUT_MS = 15_000L
-        /** JPEG 压缩质量 1~100：90 足够清晰识别；100 帧变大延迟高 */
+        /** JPEG 压缩质量：90 足够清晰识别；100 帧变大延迟高 */
         private const val JPEG_QUALITY = 90
         /** 30fps 是 VD 默认刷新率，识别/点击场景 15fps 也够用 */
         private const val MAX_FPS = 30
     }
 
-    /**
-     * NativeCapturer 在 App 进程仅作为"帧消费者"：
-     *   - prepareFrameBuffer(w,h) 分配帧缓冲内存
-     *   - injectExternalFrame(Bitmap) 把 server 发来的 JPEG 解码后帧写入 frameBuffer
-     *   - setPreviewSurface() 控制预览 blit 目标
-     *   - getFrameBufferBitmap() / getFrameCount() 从 Native 端读
-     */
     private var capturer: NativeCapturer? = null
 
     private var cachedPreviewSurface: android.view.Surface? = null
 
-    /** Shizuku.newProcess 返回的 Process 对象，所有跨进程通信通过它的 3 个流 */
     @Volatile
     private var serverProcess: Process? = null
 
-    /** 持续读 server 的 stderr（避免 server 写满 stderr 后阻塞）+ 转发到 logcat */
     @Volatile
     private var stderrDrainThread: Thread? = null
 
@@ -123,7 +77,6 @@ class CompositionService(private val context: Context) {
     private var keepAliveThread: Thread? = null
     private val keepAliveRunning = AtomicBoolean(false)
 
-    /** MSG_FRAME 接收线程（独占 process.inputStream） */
     @Volatile
     private var frameReceiveThread: Thread? = null
     private val frameReceiveRunning = AtomicBoolean(false)
@@ -131,26 +84,19 @@ class CompositionService(private val context: Context) {
     @Volatile
     private var cachedDisplayId: Int = -1
 
-    /** 本次启动 VD 实际使用的档位（720P / 1080P）。未启动时为"当前设置"。 */
     private var currentMode: VdResolutionMode = resolveMode(context)
 
     var width: Int = currentMode.width
         private set
     var height: Int = currentMode.height
         private set
-    /** 本次启动 VD 实际使用的 densityDpi（= 档位.dpi），createVirtualDisplay 会用到。 */
     var densityDpi: Int = currentMode.dpi
         private set
 
     val isLandscape: Boolean get() = width > height
     val displayId: Int get() = cachedDisplayId
-    /** 对外暴露当前档位（设置页 → 日志 / 任务缩放 BASE→VD 时要用） */
     val vdMode: VdResolutionMode get() = currentMode
 
-    /**
-     * 无参启动 VD：根据 Settings 的 720P/1080P 档位读取宽高与 DPI 启动。
-     * 设置改档位后，旧 VD 不热切换（热切换需要先 stop 再 start，在 UI 里以 Toast 明确说明）。
-     */
     fun startVirtualDisplay(): Pair<android.view.Surface?, String> {
         val mode = resolveMode(context)
         currentMode = mode
@@ -166,7 +112,6 @@ class CompositionService(private val context: Context) {
         return startVirtualDisplay(width, height, mode.dpi)
     }
 
-    /** 最终实现：(width, height, densityDpi) 三参数启动。上面两个 overload 最终走这里。 */
     fun startVirtualDisplay(width: Int,
                             height: Int,
                             densityDpi: Int): Pair<android.view.Surface?, String> {
@@ -175,11 +120,9 @@ class CompositionService(private val context: Context) {
             return null to ""
         }
 
-        // 防护：确保旧的 native capturer 已释放（防止 stopVirtualDisplay 未完全清理的竞态）
         try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
         capturer = null
 
-        // step1: Shizuku 检查
         val diag = ShizukuManager.diagnoseShizuku(context)
         when (diag) {
             ShizukuManager.ShizukuDiagnosis.NOT_INSTALLED -> {
@@ -210,7 +153,6 @@ class CompositionService(private val context: Context) {
         this.densityDpi = densityDpi
 
         return try {
-            // step2: 初始化 NativeCapturer（仅分配 frameBuffer + 准备 preview blit）
             Log.i(TAG, "step2 NativeCapturer prepare ...")
             val cap = NativeCapturer()
             val prepared = try {
@@ -231,7 +173,6 @@ class CompositionService(private val context: Context) {
                 cap.setPreviewSurface(cachedPreviewSurface)
             }
 
-            // ★不再创建 LocalServerSocket★（step3 直接启动 server 进程）
             Log.i(TAG, "step3 ensureServerApk + launchServer ...")
             try {
                 ShizukuProcessManager.ensureServerApk(context)
@@ -243,7 +184,6 @@ class CompositionService(private val context: Context) {
                 return null to msg
             }
 
-            // step3.5: 立即启动 stderr drain 线程
             // app_process 启动时会输出 AndroidRuntime 日志到 stderr，不 drain 会阻塞 server 写
             stderrDrainThread = Thread({
                 try {
@@ -257,7 +197,6 @@ class CompositionService(private val context: Context) {
                 }
             }, "autobot-server-stderr").apply { isDaemon = true; start() }
 
-            // step4: 发 CREATE_VD（注意！不再带 Surface Parcel，server 自己创建 ImageReader）
             Log.i(TAG, "step4 send MSG_CREATE_VD mode=${currentMode.name} " +
                     "(${width}x${height}@${densityDpi}dpi) ...")
             val flags = DisplayManagerHelper.buildDisplayFlags()
@@ -280,10 +219,7 @@ class CompositionService(private val context: Context) {
                 return null to msg
             }
 
-            // step5: 读 CREATE_VD_RESP（带超时）
-            // 注意：server 进程刚启动，AndroidRuntime 初始化需要 1~2s，
-            // 然后 ServerMain.main() 才开始读 stdin → 处理 → 写 MSG_CREATE_VD_RESP。
-            // 超时给 15s 足够覆盖 MIUI/HyperOS 上 app_process 冷启动。
+            // server 进程刚启动 AndroidRuntime 初始化需要 1~2s，超时给 15s 覆盖 MIUI/HyperOS 上 app_process 冷启动
             Log.i(TAG, "step5 read MSG_CREATE_VD_RESP (timeout=${CREATE_VD_RESP_TIMEOUT_MS}ms) ...")
             val resp = try {
                 readCreateVdRespWithTimeout(serverProcess!!.inputStream, CREATE_VD_RESP_TIMEOUT_MS)
@@ -302,13 +238,11 @@ class CompositionService(private val context: Context) {
             }
             cachedDisplayId = resp.displayId
 
-            // step6: 启动 PING 线程（保活，只写不读）
             keepAliveRunning.set(true)
             keepAliveThread = Thread({ runKeepAlive(serverProcess!!) }, "autobot-keepalive").apply {
                 isDaemon = true; start()
             }
 
-            // step7: 启动 MSG_FRAME 接收线程 → 解码 JPEG → 注入到 NativeCapturer
             frameReceiveRunning.set(true)
             frameReceiveThread = Thread({ runFrameReceiver(serverProcess!!) }, "autobot-frame-receiver").apply {
                 isDaemon = true; start()
@@ -363,7 +297,6 @@ class CompositionService(private val context: Context) {
     }
 
     fun injectTouchMove(fromX: Int, fromY: Int, toX: Int, toY: Int) {
-        // MotionEvent 注入只需要当前坐标，fromX/fromY 不需要
         val proc = serverProcess ?: return
         try {
             VDProtocol.writeMessage(proc.outputStream, VDProtocol.MSG_TOUCH_MOVE,
@@ -383,11 +316,6 @@ class CompositionService(private val context: Context) {
         }
     }
 
-    /**
-     * 发送 MSG_KEY_BACK 到 server 进程，server 注入 KeyEvent(KEYCODE_BACK) 到虚拟显示器
-     * 用于让 VD 中的目标 App（如淘宝）返回上一层。
-     * 无 payload：keyCode 固定为 KEYCODE_BACK，由 server 端构造完整的 DOWN+UP 事件。
-     */
     fun injectBack() {
         val proc = serverProcess ?: return
         try {
@@ -403,15 +331,12 @@ class CompositionService(private val context: Context) {
 
     fun stopVirtualDisplay() {
         Log.i(TAG, "stopping ...")
-        // 停 PING
         keepAliveRunning.set(false)
         keepAliveThread?.let { t -> t.interrupt(); try { t.join(500) } catch (_: Exception) {} }; keepAliveThread = null
 
-        // 停帧接收
         frameReceiveRunning.set(false)
         frameReceiveThread?.let { t -> t.interrupt(); try { t.join(500) } catch (_: Exception) {} }; frameReceiveThread = null
 
-        // 发 RELEASE_VD 让 server 优雅退出
         val proc = serverProcess
         if (proc != null) {
             try {
@@ -427,7 +352,6 @@ class CompositionService(private val context: Context) {
             }
         }
 
-        // 销毁 server 进程（stdin/stdout pipe 由 destroy 自动关闭）
         ShizukuProcessManager.destroyServer(serverProcess); serverProcess = null
         stderrDrainThread?.let { try { it.join(500) } catch (_: Exception) {} }; stderrDrainThread = null
 
@@ -437,15 +361,6 @@ class CompositionService(private val context: Context) {
         Log.i(TAG, "VirtualDisplay stopped")
     }
 
-    // ===================== 内部实现 =====================
-
-    /**
-     * MSG_FRAME 接收主循环（独占 process.inputStream）：
-     *  - VDProtocol.readMessage 拿到新消息 → 处理 MSG_FRAME / MSG_PONG / 其他忽略
-     *  - FramePacket.fromByteArray → decodeBitmap() → NativeCapturer.injectExternalFrame(bitmap)
-     *    → Native 端自动写入 frameBuffer + 若 previewSurface 已设置则 blit 到 SurfaceView
-     *  - pipe 异常：退出循环 + cachedDisplayId=-1（UI 可感知）
-     */
     private fun runFrameReceiver(process: Process) {
         val input = process.inputStream
         Log.i(TAG, "frameReceiveThread started")
@@ -462,7 +377,6 @@ class CompositionService(private val context: Context) {
                         val pkt = FramePacket.fromByteArray(payload)
                         val bitmap = pkt.decodeBitmap() ?: continue
                         capturer?.injectExternalFrame(bitmap)
-                        // injectExternalFrame 内部已自增 frameCount
                     } catch (e: Exception) {
                         Log.e(TAG, "FramePacket decode failed: ${e.message}")
                     }
@@ -473,10 +387,8 @@ class CompositionService(private val context: Context) {
                     } catch (_: Exception) {}
                 }
                 VDProtocol.MSG_PONG -> {
-                    // 收到 PONG 表明 pipe 还活着；不做事
                 }
                 VDProtocol.MSG_RELEASE_VD_RESP -> {
-                    // 收到 server 释放响应：可以退出了
                     Log.i(TAG, "Got RELEASE_VD_RESP from server, exiting frameReceive loop")
                     break
                 }
@@ -489,9 +401,6 @@ class CompositionService(private val context: Context) {
 
     /**
      * 保活线程：**只负责定时写 PING**，**不读**（防止和 frameReceiveThread 抢 inputStream）。
-     * pipe 异常会通过 writeMessage 抛 IOException，本线程捕获后 break。
-     * 真正的"是否还活着"判定：frameReceiveThread 持续读 MSG_FRAME，
-     * 一旦 pipe 断开 readMessage 抛异常 break，触发 cleanup。
      */
     private fun runKeepAlive(process: Process) {
         val out = process.outputStream

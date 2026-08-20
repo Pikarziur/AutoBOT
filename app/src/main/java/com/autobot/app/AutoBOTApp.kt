@@ -10,7 +10,6 @@ import rikka.shizuku.Shizuku
 
 /**
  * AutoBOT 应用全局 Application 类
- * 用于初始化全局配置和监听 Shizuku 连接状态
  *
  * ★重要变更（替代 SH 脚本模式）★：
  *   - 不再 init ScriptTaskManager（已删除，旧版 adb shell 路径全部清理）
@@ -30,9 +29,7 @@ class AutoBOTApp : Application() {
         }
 
         /**
-         * app 级 CompositionService 单例（跨 Activity 生命周期）
-         *
-         * MonitorViewModel/TaskExecutor 都从这里取，避免 Activity 销毁时 VD 被一起 stop。
+         * app 级 CompositionService 单例（跨 Activity 生命周期）。
          * 真正的 VD 释放时机：用户主动停止 VD，或 App 进程被系统杀掉时随进程一起清理
          * （server 进程的 stdin pipe EOF 后会自动 exit）。
          */
@@ -49,8 +46,7 @@ class AutoBOTApp : Application() {
     }
 
     override fun onCreate() {
-        // 在 super.onCreate 之前启用 Vector 资源兼容 —— 修复某些系统版本下 Switch / CompoundButton
-        // 加载 Drawable 资源时的间接 NPE（与 StaticLayout null 同源的兼容性坑）
+        // 启用 Vector 资源兼容 —— 修复某些系统版本下 Switch / CompoundButton 加载 Drawable 资源时的间接 NPE
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)
         // 强制浅色模式，保证白色主题始终生效
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
@@ -58,21 +54,17 @@ class AutoBOTApp : Application() {
         super.onCreate()
         instance = this
 
-        // 1. 注册全局未捕获异常处理器，避免"一打开就闪退"后无任何提示
-        //    生产环境可上报崩溃到后台，此处记录日志便于调试
         installGlobalCrashHandler()
 
-        // 2. 初始化任务文件管理器（替代旧版 ScriptTaskManager）
-        //    扫描 filesDir/tasks/ 加载 JSON 任务文件 + 从 assets/tasks/ 装载预置任务
+        // 初始化任务文件管理器（替代旧版 ScriptTaskManager）：扫描 filesDir/tasks/ + 装载 assets/tasks/
         try {
             TaskFileManager.init(this)
         } catch (e: Exception) {
             Log.e(TAG, "TaskFileManager init failed", e)
         }
 
-        // 3. 监听 Shizuku 连接状态变化
-        //    注意：Shizuku 未安装或 Shizuku 服务未启动时，addBinderReceivedListener 会抛异常
-        //    必须先检查 pingBinder 且所有 Shizuku API 调用都套 try-catch
+        // 注意：Direct Shizuku API calls in Application.onCreate() 必须 try-catch；
+        // Shizuku 未安装或服务未启动时，addBinderReceivedListener 会抛异常，必须先检查 pingBinder
         try {
             if (ShizukuManager.isShizukuInstalled(this)) {
                 Shizuku.addBinderReceivedListener {
@@ -94,11 +86,8 @@ class AutoBOTApp : Application() {
     }
 
     /**
-     * 全局未捕获异常处理器
-     *
-     * 避免"启动即闪退"场景下没有任何线索。
-     * - 向 Logcat 输出完整堆栈（可通过 adb logcat 抓到）
-     * - 保留默认处理器继续抛出，不掩盖异常
+     * 全局未捕获异常处理器（避免"启动即闪退"场景下没有任何线索）。
+     * 保留默认处理器继续抛出，不掩盖异常。
      */
     private fun installGlobalCrashHandler() {
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()

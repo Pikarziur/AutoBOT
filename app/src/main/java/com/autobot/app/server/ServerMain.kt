@@ -14,38 +14,23 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * Server 进程入口（Shizuku.newProcess 启动的 shell uid app_process）
+ * Server 进程入口（Shizuku.newProcess 启动的 shell uid app_process）。
  *
- * ★关键架构变更（修复 LocalSocket Permission denied）★：
- *   旧方案 ❌：App 创建 LocalServerSocket → server 用 LocalSocket.connect()
- *              → Android 10+ SELinux 禁止 shell domain 连接 untrusted_app domain 的
- *                abstract namespace socket → IOException: Permission denied
- *   新方案 ✅（scrcpy 同款架构）：直接用 stdin/stdout pipe
- *     - App 端通过 process.outputStream 写 → server 端 System.in 读
- *     - server 端 System.out.write → App 端 process.inputStream 读
- *     - AndroidRuntime 启动日志和 Android Log 走 logd，不污染 stdout pipe
+ * 踩坑 1（LocalSocket Permission denied）：旧方案 App 建 LocalServerSocket、server 用
+ * LocalSocket.connect() → Android 10+ SELinux 禁止 shell domain 连 untrusted_app domain
+ * 的 abstract namespace socket → IOException。新方案改用 stdin/stdout pipe（scrcpy 同款）。
  *
- * 数据流：
- *   1. App → server：MSG_CREATE_VD / MSG_PING / MSG_FRAME_ACK / MSG_RELEASE_VD
- *   2. server → App：MSG_CREATE_VD_RESP / MSG_FRAME / MSG_PONG / MSG_RELEASE_VD_RESP
- *
- * 关键修复（修复 Parcel.marshall 失败）：
- *   不再接收 App 端 Surface Parcel（Surface 内藏 IGraphicBufferProducer Binder）。
- *   server 端同时持有 VD creator + VD consumer 两端，完全绕开 Surface 跨进程传递死胡同。
- *
- * server 端自己读帧也有额外好处：
- *   - 不需要在独立进程加载 libautobot_native.so（不用处理 JNI class 路径注册问题）
- *   - 全部用 Java/Kotlin 标准 API（minSdk=26 都覆盖 ImageReader/YuvImage/BitmapFactory）
- *   - 崩溃栈更容易在 logcat 的 ServerMain tag 中读出来
+ * 踩坑 2（Parcel.marshall 失败）：不再接收 App 端 Surface Parcel（Surface 内藏
+ * IGraphicBufferProducer Binder）；server 端同时持有 VD creator + consumer 两端，
+ * 绕开 Surface 跨进程传递死胡同。
  */
 object ServerMain {
 
     private const val TAG = "ServerMain"
 
-    /** 最大 ImageReader 缓冲帧数：3 足够 30fps 不丢帧 */
+    /** 最大 ImageReader 缓冲帧数：3 足够 30fps 不丢帧。 */
     private const val MAX_IMAGES = 3
 
-    /** MSG_FRAME 节流：收到的 ACK 数量 / 发送的帧数量 简单节流 */
     @Volatile private var ackCounter = 0L
     @Volatile private var frameIndex = 0L
     @Volatile private var maxFps = 30
@@ -55,13 +40,7 @@ object ServerMain {
     @Volatile private var running = true
     @Volatile private var cachedDisplayId = -1
 
-    /**
-     * Server 入口。args 不再传 socketName 参数（用 stdin/stdout pipe 通信）。
-     *
-     * ★关键：用 System.in / System.out 替代 LocalSocket★
-     *   Shizuku.newProcess 返回的 Process 对象的 inputStream/outputStream 自动连接到
-     *   server 进程的 System.out / System.in，无需任何 socket 建连，无 SELinux 限制
-     */
+    /** Server 入口；用 System.in / System.out 替代 LocalSocket（Shizuku.newProcess 的 pipe 直连）。 */
     @JvmStatic
     fun main(args: Array<String>) {
         Log.i(TAG, "🚀 start pid=${Process.myPid()} uid=${Process.myUid()}")
@@ -70,7 +49,6 @@ object ServerMain {
         val out: OutputStream = System.out
 
         try {
-            // 首条消息必须是 CREATE_VD
             val (msgType, payload) = try {
                 VDProtocol.readMessage(input)
             } catch (e: Exception) {
@@ -86,10 +64,9 @@ object ServerMain {
 
             val (vdCreated, readerCreated) = handleCreateVd(payload, out)
             if (!vdCreated || readerCreated == null) {
-                return  // handleCreateVd 里已经写了 MSG_CREATE_VD_RESP（含失败错误）
+                return
             }
 
-            // VD 创建成功：进入 keepAlive 循环
             runKeepAliveLoop(input, out, readerCreated)
 
         } catch (t: Throwable) {
@@ -102,16 +79,7 @@ object ServerMain {
         }
     }
 
-    /**
-     * 处理 CREATE_VD：
-     *   - 反序列化 VDRequest → w/h/density/flags/name/jpegQuality/maxFps
-     *   - Workarounds.apply + FakeContext
-     *   - 反射 DisplayManager(Context) + createVirtualDisplay(name,w,h,dpi,surface,flags)
-     *   - 新：ImageReader.newInstance(w,h,YUV_420_888,MAX_IMAGES)
-     *   - 新：onImageAvailableListener 监听 new image → compress JPEG → MSG_FRAME
-     *
-     * @return Pair<vdCreated: Boolean, readerCreated: ImageReader?>
-     */
+    /** 处理 CREATE_VD：Workarounds + FakeContext + ImageReader + createVirtualDisplay + 帧监听。 */
     private fun handleCreateVd(payload: ByteArray, out: OutputStream): Pair<Boolean, ImageReader?> {
         try {
             val req = VDRequest.fromByteArray(payload)
@@ -120,7 +88,7 @@ object ServerMain {
             jpegQuality = req.jpegQuality.coerceIn(1, 100)
             maxFps = req.maxFps.coerceIn(1, 60)
 
-            // 3: Workarounds.apply（app_process 没有 ActivityThread，必须注入；Samsung/MIUI 要求 Android 12+）
+            // Workarounds.apply：app_process 没有 ActivityThread 必须注入；Samsung/MIUI 要求 Android 12+
             try {
                 Workarounds.apply()
                 Log.i(TAG, "✅ Workarounds.apply() OK")
@@ -128,19 +96,16 @@ object ServerMain {
                 Log.w(TAG, "Workarounds.apply() failed (continuing with FakeContext fallback)", t)
             }
 
-            // 4: FakeContext
             val fakeCtx = FakeContext.get()
             Log.i(TAG, "✅ FakeContext OK: pkg=${fakeCtx.packageName}")
 
-            // 5: ImageReader（server 端自产自销：生产端是 VD，消费端是 onImageAvailable 读帧）
-            // ★关键：用 RGBA_8888 而非 YUV_420_888★
+            // ★关键踩坑：用 PixelFormat.RGBA_8888 而非 YUV_420_888★
             // VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，YUV_420_888 会导致
             // "producer output buffer format 0x1 doesn't match ImageReader's configured buffer format 0x23"
             Log.i(TAG, "ImageReader.newInstance(w=${req.width}, h=${req.height}, fmt=RGBA_8888, maxImages=$MAX_IMAGES) ...")
             val reader = ImageReader.newInstance(req.width, req.height, PixelFormat.RGBA_8888, MAX_IMAGES)
             Log.i(TAG, "✅ ImageReader OK: surface=${reader.surface}")
 
-            // 6: createVirtualDisplay（直接把 ImageReader.surface 给 VD 当输出，不需要跨进程！）
             val vd = DisplayManagerHelper.createVirtualDisplay(
                 surface = reader.surface,
                 name = req.name,
@@ -161,7 +126,6 @@ object ServerMain {
             cachedDisplayId = displayId
             Log.i(TAG, "✅ VD created, displayId=$displayId")
 
-            // 7: 注册 ImageReader.onImageAvailableListener
             // 注意：必须用单独的 Looper 线程注册 listener，否则 onImageAvailable 不触发
             startImageListenerThread(reader, out, 1_000_000_000L / maxFps)
 
@@ -201,12 +165,11 @@ object ServerMain {
     }
 
     /**
-     * 从 ImageReader 拿到最新一帧 → RGBA_8888 → Bitmap → JPEG 压缩 → MSG_FRAME 发 stdout pipe
-     * 带简单的节流：minSendIntervalNs 以下的帧直接丢弃（避免 pipe 缓冲积压）
+     * 从 ImageReader 拿最新一帧 → RGBA_8888 → Bitmap → JPEG 压缩 → MSG_FRAME 发 stdout pipe。
+     * minSendIntervalNs 以下的帧直接丢弃（避免 pipe 缓冲积压）。
      *
-     * 为什么用 RGBA_8888？
-     *   VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，YUV_420_888 会导致格式不匹配。
-     *   RGBA → Bitmap.compress(JPEG) 是最稳健的跨设备 JPEG 压缩方式。
+     * 为什么用 RGBA_8888：VirtualDisplay 在 Android 12+ 上默认输出 RGBA 格式，
+     * YUV_420_888 会导致格式不匹配；RGBA → Bitmap.compress(JPEG) 是最稳健的跨设备压缩方式。
      */
     private var lastSendTimeNs = 0L
 
@@ -228,11 +191,10 @@ object ServerMain {
             val w = image.width
             val h = image.height
             val planes = image.planes
-            val rgbaBuffer = planes[0].buffer  // RGBA_8888 只有 1 个 plane
+            val rgbaBuffer = planes[0].buffer
             val rowStride = planes[0].rowStride
-            val rowBytes = w * 4  // RGBA 每像素 4 字节
+            val rowBytes = w * 4
 
-            // 将 RGBA 数据拷贝到紧凑 ByteBuffer（处理行对齐填充）
             val packedBuffer = java.nio.ByteBuffer.allocate(rowBytes * h)
             val rowBuf = ByteArray(rowStride)
             for (row in 0 until h) {
@@ -242,11 +204,9 @@ object ServerMain {
             }
             packedBuffer.flip()
 
-            // 创建 Bitmap 并从 RGBA 数据填充像素
             val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
             bitmap.copyPixelsFromBuffer(packedBuffer)
 
-            // JPEG 压缩
             val jpegBaos = ByteArrayOutputStream(64 * 1024)
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, jpegQuality, jpegBaos)
             bitmap.recycle()
@@ -298,7 +258,6 @@ object ServerMain {
                         injectMotionEvent(android.view.MotionEvent.ACTION_UP, ev.x, ev.y)
                     }
                     VDProtocol.MSG_KEY_BACK -> {
-                        // 注入 KEYCODE_BACK（DOWN + UP 一对），让 VD 中的 App 返回上一层
                         injectKeyBack()
                     }
                     VDProtocol.MSG_RELEASE_VD -> {
@@ -323,11 +282,9 @@ object ServerMain {
         heldVd = null
         try { heldReader?.close() } catch (e: Exception) { Log.w(TAG, "ImageReader close: ${e.message}") }
         heldReader = null
-        // Looper.quit() 让 ImageListenerHandlerThread 自行退出
         try { android.os.Looper.myLooper()?.quitSafely() } catch (_: Exception) {}
     }
 
-    // ===== IInputManager 反射缓存（避免每次触摸事件都做反射查找）=====
     private var inputManagerInstance: Any? = null
     private var injectMethod: java.lang.reflect.Method? = null
     private var setDisplayIdMethod: java.lang.reflect.Method? = null       // MotionEvent.setDisplayId
@@ -335,18 +292,15 @@ object ServerMain {
     private var inputManagerInited = false
 
     /**
-     * 使用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器
-     * （MAA-Meow / scrcpy 同款方案，零进程开销，支持高频触摸）
+     * 使用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器（MAA-Meow/scrcpy 同款）。
      *
-     * 关键点：
-     *   1. InputManager.getInstance() 是 @hide API → 反射调用
-     *   2. MotionEvent.setDisplayId(int) 是 @hide API → 反射调用（API 30+ 有 public 版本，但反射兜底更安全）
-     *   3. injectInputEvent(event, mode) 是 @hide API → 反射调用
-     *   4. mode=0 (INJECT_INPUT_EVENT_MODE_ASYNC) 异步注入，不阻塞
-     *   5. shell uid 持有 INJECT_INPUT_EVENTS 权限，不会被拒绝
+     * API 兼容性：
+     *   - InputManager.getInstance() / MotionEvent.setDisplayId(int) / injectInputEvent(event, mode) 均 @hide，需反射
+     *   - MotionEvent.setDisplayId API 30+ 有 public 版本，反射兜底更安全
+     *   - mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC，异步注入不阻塞
+     *   - shell uid 持有 INJECT_INPUT_EVENTS 权限，不会被拒绝
      *
-     * 反射结果缓存到 inputManagerInstance / injectMethod / setDisplayIdMethod，
-     * 首次调用初始化，后续直接用缓存值，性能接近直接调用。
+     * 反射结果缓存到 inputManagerInstance / injectMethod / setDisplayIdMethod，首次调用初始化。
      */
     private fun injectMotionEvent(action: Int, x: Int, y: Int) {
         val displayId = cachedDisplayId
@@ -356,23 +310,19 @@ object ServerMain {
         }
 
         try {
-            // 首次调用：初始化反射缓存
             ensureInputManagerReflection()
 
             val im = inputManagerInstance ?: return
             val inject = injectMethod ?: return
             val setDisplayId = setDisplayIdMethod
 
-            // 构造 MotionEvent（6 参数版：downTime, eventTime, action, x, y, metaState）
             val now = android.os.SystemClock.uptimeMillis()
             val event = android.view.MotionEvent.obtain(
                 now, now, action,
                 x.toFloat(), y.toFloat(), 0
             )
             try {
-                // 设置 displayId → 注入到虚拟显示器而非主屏幕
                 setDisplayId?.invoke(event, displayId)
-                // 设置触摸源
                 event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
                 // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
                 inject.invoke(im, event, 0)
@@ -385,16 +335,14 @@ object ServerMain {
     }
 
     /**
-     * 注入 KEYCODE_BACK 到虚拟显示器（一次完整按键 = ACTION_DOWN + ACTION_UP）
+     * 注入 KEYCODE_BACK 到虚拟显示器（一次完整按键 = ACTION_DOWN + ACTION_UP）。
+     * 复用 [ensureInputManagerReflection] 的反射缓存，setDisplayId 用 KeyEvent 专用版本。
      *
-     * 复用 [ensureInputManagerReflection] 初始化的反射缓存（inputManagerInstance / injectMethod），
-     * 但 setDisplayId 用 KeyEvent 专用版本（setDisplayIdKeyEventMethod）。
-     *
-     * 注意：
-     *   1. KeyEvent.obtain(downTime, eventTime, action, keyCode, repeat) 是 API 1+ 的稳定签名
-     *   2. KEYCODE_BACK = 4，固定不需要从 payload 取
-     *   3. DOWN 与 UP 之间间隔 50ms，模拟一次按键
-     *   4. shell uid 持有 INJECT_INPUT_EVENTS 权限，注入 KeyEvent 同 MotionEvent 一样被允许
+     * API 兼容性：
+     *   - 注意：KeyEvent 没有 obtain(long,...) static 工厂（MotionEvent 才有），必须用 constructor
+     *     直接构造：KeyEvent(downTime, eventTime, action, keyCode, repeat, metaState) — API 1+
+     *   - DOWN 与 UP 之间间隔 50ms，模拟一次按键
+     *   - shell uid 持有 INJECT_INPUT_EVENTS 权限，注入 KeyEvent 同 MotionEvent 一样被允许
      */
     private fun injectKeyBack() {
         val displayId = cachedDisplayId
@@ -404,7 +352,6 @@ object ServerMain {
         }
 
         try {
-            // 首次调用：初始化反射缓存（与 injectMotionEvent 共用同一套反射）
             ensureInputManagerReflection()
 
             val im = inputManagerInstance ?: return
@@ -412,9 +359,6 @@ object ServerMain {
             val setDisplayId = setDisplayIdKeyEventMethod
 
             val now = android.os.SystemClock.uptimeMillis()
-            // DOWN + UP 一对构成完整按键事件
-            // 注意：KeyEvent 没有 obtain(long,...) static 工厂（MotionEvent 才有）
-            // 必须用 constructor 直接构造：KeyEvent(downTime, eventTime, action, keyCode, repeat, metaState) — API 1+
             val downEvent = android.view.KeyEvent(
                 now, now,
                 android.view.KeyEvent.ACTION_DOWN,
@@ -429,10 +373,8 @@ object ServerMain {
                 0,  // repeat
                 0   // metaState
             )
-            // 设置 displayId → 注入到虚拟显示器而非主屏幕
             setDisplayId?.invoke(downEvent, displayId)
             setDisplayId?.invoke(upEvent, displayId)
-            // 设置键盘源
             downEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
             upEvent.source = android.view.InputDevice.SOURCE_KEYBOARD
             // 异步注入 (mode=0 = INJECT_INPUT_EVENT_MODE_ASYNC)
@@ -446,15 +388,7 @@ object ServerMain {
         }
     }
 
-    /**
-     * 首次调用时初始化 InputManager 反射缓存（幂等：inputManagerInited 标记位防重复）
-     *
-     * 缓存项：
-     *   - inputManagerInstance   : InputManager.getInstance() 单例
-     *   - injectMethod            : InputManager.injectInputEvent(InputEvent, int)
-     *   - setDisplayIdMethod      : MotionEvent.setDisplayId(int) — 触摸事件用
-     *   - setDisplayIdKeyEventMethod : KeyEvent.setDisplayId(int) — 返回键用
-     */
+    /** 首次调用时初始化 InputManager 反射缓存（幂等：inputManagerInited 标记位防重复）。 */
     private fun ensureInputManagerReflection() {
         if (inputManagerInited) return
         inputManagerInited = true

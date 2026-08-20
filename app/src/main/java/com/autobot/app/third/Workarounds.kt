@@ -15,25 +15,15 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 
 /**
- * 系统兼容性工作区（完全照搬 MAA-Meow/scrcpy 的 Workarounds.java）。
+ * 系统兼容性工作区（照搬 MAA-Meow/scrcpy 的 Workarounds.java）。
  *
- * 为什么需要这个？
- * 虚拟显示器创建路径（DisplayManager(Context) 构造器 + createVirtualDisplay）
- * 内部会走 ActivityThread.currentActivityThread().getConfiguration()、
- * ContentProvider.acquireProvider() 等系统调用。如果当前进程没有准备好
- * ActivityThread 实例（非 App 主线程场景，或即使是 App 主线程也需要用
- * "com.android.shell" 身份的 mBoundApplication），这些调用会 NPE 或返回错误。
+ * 踩坑：虚拟显示器创建路径内部会走 ActivityThread.currentActivityThread().getConfiguration()、
+ * ContentProvider.acquireProvider() 等系统调用；当前进程没有准备好 ActivityThread 实例
+ * （非 App 主线程，或需用 "com.android.shell" 身份的 mBoundApplication）时这些调用会 NPE。
  *
- * 这个类负责：
- *  1. prepareMainLooper() —— 手动设置 sMainLooper（可退出）
- *  2. 实例化 ActivityThread 并注入 sCurrentActivityThread
- *  3. 设 mSystemThread=true（避免 App 身份的校验）
- *  4. fillAppInfo() —— 填充 mBoundApplication.appInfo.packageName="com.android.shell"
- *  5. fillAppContext() —— 填充 mInitialApplication = Application(FakeContext)
- *  6. fillConfigurationController() —— Android 12+ 必须，否则三星等设备 getDisplayInfoLocked() NPE
- *  7. getSystemContext() —— 通过 ActivityThread.getSystemContext() 拿到真正的系统级 Context
- *
- * 必须在 FakeContext.get() / DisplayManagerHelper.createVirtualDisplay() 之前调用 apply()。
+ * 关键约定：
+ *   - Android 12+ 必须先 fillConfigurationController()，否则三星等设备 getDisplayInfoLocked() NPE
+ *   - 必须在 FakeContext.get() / DisplayManagerHelper.createVirtualDisplay() 之前调用 apply()
  */
 @SuppressLint("PrivateApi, BlockedPrivateApi, SoonBlockedPrivateApi, DiscouragedPrivateApi")
 object Workarounds {
@@ -44,14 +34,8 @@ object Workarounds {
     private val activityThread: Any
 
     /**
-     * 重入守卫：防止 apply() 内的 fillAppContext() → FakeContext.get() → apply() 无限递归。
-     *
-     * 递归链路：
-     *   apply() → fillAppContext() → FakeContext.get() → apply() → ... StackOverflow
-     *
-     * 当 fillAppContext() 内部触发 FakeContext.get() 时，后者会再次调用 apply()。
-     * 此时 applying=true，apply() 立即返回（因为 ActivityThread 已在 init 块中创建完毕，
-     * getSystemContext() 可以正常工作，无需等 apply() 完整执行）。
+     * 重入守卫：防止 apply() → fillAppContext() → FakeContext.get() → apply() 无限递归 StackOverflow。
+     * 第二次进入时 applying=true 直接返回（init 块已建好 ActivityThread，getSystemContext() 可用）。
      */
     @Volatile
     private var applying = false
@@ -60,18 +44,15 @@ object Workarounds {
         try {
             prepareMainLooper()
 
-            // ActivityThread activityThread = new ActivityThread()
             activityThreadClass = Class.forName("android.app.ActivityThread")
             val activityThreadConstructor: Constructor<*> = activityThreadClass.getDeclaredConstructor()
             activityThreadConstructor.isAccessible = true
             activityThread = activityThreadConstructor.newInstance()
 
-            // ActivityThread.sCurrentActivityThread = activityThread
             val sCurrentActivityThreadField: Field = activityThreadClass.getDeclaredField("sCurrentActivityThread")
             sCurrentActivityThreadField.isAccessible = true
             sCurrentActivityThreadField.set(null, activityThread)
 
-            // activityThread.mSystemThread = true
             val mSystemThreadField: Field = activityThreadClass.getDeclaredField("mSystemThread")
             mSystemThreadField.isAccessible = true
             mSystemThreadField.setBoolean(activityThread, true)
@@ -83,14 +64,7 @@ object Workarounds {
         }
     }
 
-    /**
-     * 入口：一次性调用，准备好全部系统环境。
-     * 多次调用安全（幂等 + 重入守卫）。
-     *
-     * 重入场景：fillAppContext() → FakeContext.get() → apply()
-     *   第二次调用时 applying=true，直接 return。
-     *   此时 ActivityThread 已创建（init 块完成），getSystemContext() 可正常工作。
-     */
+    /** 入口：一次性调用，准备好全部系统环境。多次调用安全（幂等 + 重入守卫）。 */
     @JvmStatic
     fun apply() {
         if (applying) {
@@ -99,10 +73,8 @@ object Workarounds {
         }
         applying = true
         try {
-            // 已经在静态 init 块中准备了 ActivityThread
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Android 12+ 必须先填充 ConfigurationController，再 fillAppContext
-                // （fillAppContext 依赖 getSystemContext，后者在三星等设备上会调 getConfiguration()）
                 fillConfigurationController()
             }
 
@@ -134,7 +106,6 @@ object Workarounds {
 
     private fun fillAppInfo() {
         try {
-            // ActivityThread.AppBindData appBindData = new ActivityThread.AppBindData()
             val appBindDataClass: Class<*> = Class.forName("android.app.ActivityThread\$AppBindData")
             val appBindDataConstructor: Constructor<*> = appBindDataClass.getDeclaredConstructor()
             appBindDataConstructor.isAccessible = true
@@ -143,12 +114,10 @@ object Workarounds {
             val applicationInfo = ApplicationInfo()
             applicationInfo.packageName = FakeContext.PACKAGE_NAME
 
-            // appBindData.appInfo = applicationInfo
             val appInfoField: Field = appBindDataClass.getDeclaredField("appInfo")
             appInfoField.isAccessible = true
             appInfoField.set(appBindData, applicationInfo)
 
-            // activityThread.mBoundApplication = appBindData
             val mBoundApplicationField: Field = activityThreadClass.getDeclaredField("mBoundApplication")
             mBoundApplicationField.isAccessible = true
             mBoundApplicationField.set(activityThread, appBindData)
@@ -163,7 +132,6 @@ object Workarounds {
     private fun fillAppContext() {
         try {
             val app: Application = Instrumentation.newApplication(Application::class.java, FakeContext.get())
-            // activityThread.mInitialApplication = app
             val mInitialApplicationField: Field = activityThreadClass.getDeclaredField("mInitialApplication")
             mInitialApplicationField.isAccessible = true
             mInitialApplicationField.set(activityThread, app)
@@ -179,12 +147,10 @@ object Workarounds {
             val configurationControllerClass: Class<*> = Class.forName("android.app.ConfigurationController")
             val activityThreadInternalClass: Class<*> = Class.forName("android.app.ActivityThreadInternal")
 
-            // new ConfigurationController(activityThreadInternalClass instance = our ActivityThread)
             val ctor: Constructor<*> = configurationControllerClass.getDeclaredConstructor(activityThreadInternalClass)
             ctor.isAccessible = true
             val configurationController: Any = ctor.newInstance(activityThread)
 
-            // activityThread.mConfigurationController = configurationController
             val field: Field = activityThreadClass.getDeclaredField("mConfigurationController")
             field.isAccessible = true
             field.set(activityThread, configurationController)
@@ -195,10 +161,7 @@ object Workarounds {
         }
     }
 
-    /**
-     * 获取系统级 Context（通过 ActivityThread.getSystemContext()）。
-     * FakeContext 应该用这个作为 base，而不是 App 的 applicationContext。
-     */
+    /** 获取系统级 Context；FakeContext 用它作为 base，而非 App 的 applicationContext。 */
     @JvmStatic
     fun getSystemContext(): Context? {
         return try {

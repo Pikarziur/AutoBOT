@@ -20,20 +20,18 @@ import java.lang.reflect.Field
 // ShellContentResolver 内部使用 Any? 类型 + 反射方式处理 Provider 实例。
 
 /**
- * 伪装 shell 身份的 Context 包装器（完全对齐 MAA-Meow/scrcpy 的 FakeContext.java）。
+ * 伪装 shell 身份的 Context 包装器（对齐 MAA-Meow/scrcpy 的 FakeContext.java）。
  *
- * 关键差异——相比旧版本：
- * 1. base 改为 Workarounds.getSystemContext()（系统级 Context），
- *    而不是 App 的 applicationContext。DisplayManager 构造器内部需要通过
- *    这个 Context 拿到正确的系统服务和 ActivityThread。
- * 2. 新增 ShellContentResolver，重写隐藏的 acquireProvider() / releaseProvider()，
- *    通过 ActivityManager.getContentProviderExternal() 走 shell UID 的 Provider 查询。
- *    不这样做的话，DisplayManager 内部需要 ContentProvider 时会报 SecurityException
- *    （App UID vs shell UID 不一致）。
- * 3. 重写 getSystemService()：对 CLIPBOARD_SERVICE 替换 mContext 为 FakeContext，
+ * 关键设计（含踩坑）：
+ * 1. base 必须用 Workarounds.getSystemContext()，不能用 App 的 applicationContext
+ *    ——DisplayManager 构造器需要通过它拿正确的系统服务和 ActivityThread。
+ * 2. ShellContentResolver 重写隐藏的 acquireProvider()/releaseProvider()，通过
+ *    ActivityManager.getContentProviderExternal() 走 shell UID 的 Provider 查询；
+ *    否则 DisplayManager 内部需要 ContentProvider 时会报 SecurityException（App UID vs shell UID 不一致）。
+ * 3. getSystemService() 对 CLIPBOARD_SERVICE 替换 mContext 为 FakeContext，
  *    避免 ClipboardManager 内部持有真实 App Context 引发权限问题。
  *
- * 使用：在首次调用 get() 前必须先调用 Workarounds.apply()。
+ * 使用：首次调用 get() 前必须先 Workarounds.apply()。
  */
 @SuppressLint("PrivateApi, DiscouragedPrivateApi")
 class FakeContext private constructor(base: Context) : ContextWrapper(base) {
@@ -55,7 +53,6 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
 
     override fun getApplicationContext(): Context = this
 
-    // ---- 新增：自定义 ContentResolver ----
     // 具名子类而非匿名类：避免 R8 在某些优化模式下把隐藏方法 override 当死代码删掉
     private val contentResolver: ContentResolver = ShellContentResolver(this)
 
@@ -63,14 +60,12 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
 
     private class ShellContentResolver(context: Context) : ContentResolver(context) {
 
-        // 注意：acquireProvider 等方法的返回类型在父类 ContentResolver 中是
-        // 隐藏的 IContentProvider，标准 SDK 不可见，因此用 Any? 兜底，运行时
-        // 通过反射取 holder.provider 字段（类型为 IContentProvider）即可。
+        // 注意：acquireProvider 等方法的返回类型在父类 ContentResolver 中是隐藏的 IContentProvider，
+        // 标准 SDK 不可见，因此用 Any? 兜底，运行时通过反射取 holder.provider 字段（类型为 IContentProvider）。
         @Suppress("unused", "ProtectedMemberInFinalClass")
         // @Override（super 方法隐藏，编译期不可见）
         protected fun acquireProvider(c: Context, name: String): Any? {
-            // 通过 ActivityManager.getContentProviderExternal(name, new Binder())
-            // 对应的 AIDL 调用在 shell UID 下是允许的
+            // 通过 ActivityManager.getContentProviderExternal(name, new Binder()) —— AIDL 调用在 shell UID 下允许
             return try {
                 val amClass = Class.forName("android.app.ActivityManagerNative")
                 val getDefault = amClass.getDeclaredMethod("getDefault")
@@ -106,7 +101,6 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
         fun unstableProviderDied(icp: Any?) { /* ignore */ }
     }
 
-    // ---- 新增：getSystemService 特殊处理 ----
     @SuppressLint("SoonBlockedPrivateApi")
     override fun getSystemService(name: String): Any? {
         val service = super.getSystemService(name) ?: return null
@@ -130,20 +124,15 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
         @Volatile
         private var instance: FakeContext? = null
 
-        /**
-         * 获取 FakeContext 单例。
-         * 首次调用前必须 Workarounds.apply()。
-         * 单例模式：避免反复创建，并且保证 FakeContext.getApplicationContext() == this 循环一致。
-         */
+        /** 获取 FakeContext 单例；首次调用前必须 Workarounds.apply()。 */
         fun get(base: Context? = null): FakeContext {
             instance?.let { return it }
             synchronized(this) {
                 instance?.let { return it }
 
-                // 1. 确保 Workarounds 准备完成
                 Workarounds.apply()
 
-                // 2. 优先用 Workarounds.getSystemContext()（系统级 Context）
+                // 优先用 Workarounds.getSystemContext()（系统级 Context）
                 val sysCtx = Workarounds.getSystemContext()
                 val ctx = sysCtx ?: base?.applicationContext ?: base
                 ?: error("Workarounds.getSystemContext() returned null and no fallback base provided. Call Workarounds.apply() first.")
@@ -155,9 +144,7 @@ class FakeContext private constructor(base: Context) : ContextWrapper(base) {
             }
         }
 
-        /**
-         * 显式重置（测试或进程热重启场景），普通流程不需要调用。
-         */
+        /** 显式重置（测试或进程热重启场景）。 */
         fun resetForTest() {
             instance = null
         }

@@ -39,19 +39,16 @@ class SafeMaterialSwitch @JvmOverloads constructor(
         try {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         } catch (e: NullPointerException) {
-            // 防御性兜底：若 makeLayout 内部仍抛 NPE，强制重置后重试一次
             applySafeDefaults()
             try {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             } catch (e2: Throwable) {
-                // 再次失败则用最小安全尺寸，保证不崩
                 setMeasuredDimension(
                     resolveSizeAndState(suggestedMinimumWidth, widthMeasureSpec, 0),
                     resolveSizeAndState(suggestedMinimumHeight, heightMeasureSpec, 0)
                 )
             }
         } catch (e: Throwable) {
-            // 其他任何异常也不能让视图测量崩掉
             try {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             } catch (e2: Throwable) {

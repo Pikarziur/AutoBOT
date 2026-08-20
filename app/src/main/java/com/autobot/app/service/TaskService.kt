@@ -15,16 +15,6 @@ import com.autobot.app.manager.TaskExecutor
 import com.autobot.app.manager.TaskManager
 import com.autobot.app.ui.MainActivity
 
-/**
- * 后台任务前台服务
- *
- * ★重要变更★：旧版依赖 SH 脚本子进程保活；新版任务动作由 [TaskExecutor] 在 App 进程内
- * 通过 CompositionService 驱动 MotionEvent 注入到 VD。本服务作用变成纯"前台保活通知"：
- *   - 任务运行期间作为前台服务，避免 App 被系统查杀 → App 进程不死 → server pipe 不死
- *     → VD 持续合成 + MotionEvent 注入持续生效（即使切到后台/小窗也不中断）
- *   - 通知文案展示当前任务名，方便用户在通知栏快速看到正在跑的任务
- *   - 任务结束（完成/停止/出错）后自动 stopSelf 释放前台服务
- */
 class TaskService : Service() {
 
     companion object {
@@ -126,8 +116,6 @@ class TaskService : Service() {
     private fun buildNotification(): Notification {
         val runningTasks = TaskManager.getRunningTasks()
         val count = runningTasks.size
-        // 文案反映当前任务名：让用户在通知栏一眼看到正在跑哪个任务
-        // 优先使用 TaskExecutor.currentTaskName()（实时性最高），fallback 才用 runningTasks
         val taskName = TaskExecutor.currentTaskName().ifBlank {
             runningTasks.firstOrNull()?.name ?: ""
         }
@@ -162,7 +150,6 @@ class TaskService : Service() {
 
     private fun checkAndStopIfNeeded() {
         if (!TaskManager.hasRunningTasks()) {
-            // 没有运行中的任务，停止服务
             stopForegroundCompat()
             stopSelf()
         }

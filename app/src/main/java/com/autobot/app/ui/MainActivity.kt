@@ -43,27 +43,12 @@ import com.autobot.app.ui.tasks.MonitorViewModel
 import com.autobot.app.ui.tasks.TasksScreen
 import com.autobot.app.ui.theme.AutoBotTheme
 
-/**
- * 主 Activity（纯 Compose 架构，对齐 MAA-Meow）
- *
- * 取消 Fragment + XML 布局，改用 setContent 直接承载 Scaffold：
- *   - Scaffold.bottomBar = NavigationBar（纯文字 Tab：后台任务 / 设置）
- *   - Scaffold.content 根据 Tab 显示 TasksScreen / SettingsScreen
- *   - 全屏模式下 bottomBar 不渲染（返回空），content 自动填满整个窗口，
- *     彻底解决原 Fragment 架构中 BottomNavigationView 作为兄弟节点
- *     无法被 FullscreenMonitor 覆盖的问题。
- *
- * 原 Fragment 的职责迁移：
- *   - TasksFragment 的 TaskManager 监听器 + onResume 刷新 → 移到 MainActivity
- *   - SettingsFragment 的 Shizuku 授权逻辑 → 移到 SettingsViewModel
- */
 class MainActivity : AppCompatActivity() {
 
     private val NOTIFICATION_REQUEST_CODE = 2001
 
     private val monitorViewModel: MonitorViewModel by viewModels()
 
-    // 任务监听器：任务状态变化时确保前台服务运行（原 TasksFragment 职责）
     private val taskListener = object : TaskManager.TaskListener {
         override fun onTaskStarted(taskId: String, taskName: String) = ensureForegroundService()
         override fun onTaskOutput(taskId: String, line: String) {}
@@ -94,23 +79,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 刷新 Shizuku 状态（原 TasksFragment.onResume 职责）
         monitorViewModel.refreshShizukuStatus()
         ensureForegroundService()
     }
 
-    /**
-     * 确保前台服务运行：有运行中任务时启动 TaskService
-     */
     private fun ensureForegroundService() {
         if (TaskManager.hasRunningTasks()) {
             TaskService.start(this)
         }
     }
 
-    /**
-     * 检查并请求通知权限（Android 13+）
-     */
     private fun checkNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
@@ -127,24 +105,11 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-/**
- * 底部导航 Tab（Material 3：图标 + 文字标签，对齐 MAA-Meow）
- *
- * 图标选用 Material Icons Outlined 风格（线性描边），与 M3 浅色主题搭配：
- *   - TASKS → PlayCircle：后台运行任务的"播放/启动"语义
- *   - SETTINGS → Settings：齿轮，通用设置图标
- */
 private enum class MainTab(val label: String, val icon: ImageVector) {
     TASKS("后台任务", Icons.Outlined.PlayCircle),
     SETTINGS("设置", Icons.Outlined.Settings)
 }
 
-/**
- * 主屏：Scaffold + 底部 NavigationBar + 内容区
- *
- * 全屏模式：bottomBar 不渲染，Scaffold 的 content 区域自动填满整个屏幕，
- * FullscreenMonitor 的 fillMaxSize 可覆盖整个窗口。
- */
 @Composable
 private fun MainScreen() {
     val vm: MonitorViewModel = viewModel()
@@ -156,7 +121,6 @@ private fun MainScreen() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
-            // 全屏时隐藏底部导航栏（不渲染，content 区域自动扩展到全屏）
             if (!isFullscreen) {
                 BottomNavBar(
                     currentTab = currentTab,
@@ -179,17 +143,6 @@ private fun MainScreen() {
     }
 }
 
-/**
- * 底部导航栏（Material 3 规范：图标 + 文字 + 药丸形 indicator）
- *
- * 配色使用项目主题色（primary 蓝）：
- *   - 选中态：图标 + 文字 = primary（深蓝 #2B6BCA），indicator = primaryContainer（浅蓝 #E5F1FF）
- *   - 未选中：图标 + 文字 = onSurfaceVariant（灰 #8A8580）
- *
- * NavigationBar 容器：
- *   - containerColor = surface（暖白 #F9F7F3）
- *   - tonalElevation = 0.dp（关闭 M3 默认表面色调提升，保持纯白底）
- */
 @Composable
 private fun BottomNavBar(
     currentTab: MainTab,
@@ -197,7 +150,7 @@ private fun BottomNavBar(
 ) {
     NavigationBar(
         modifier = Modifier.fillMaxWidth(),
-        containerColor = Color.White,  // 纯白底 #FFFFFF（覆盖 surface #F9F7F3）
+        containerColor = Color.White,
         tonalElevation = 0.dp
     ) {
         MainTab.entries.forEach { tab ->
@@ -212,11 +165,9 @@ private fun BottomNavBar(
                     )
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    // 选中态：图标 + 文字用项目主色 primary 蓝，indicator 用 primaryContainer 浅蓝
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
                     indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                    // 未选中：灰色辅助文字色
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )

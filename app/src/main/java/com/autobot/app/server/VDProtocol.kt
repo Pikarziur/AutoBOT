@@ -12,30 +12,14 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * App ↔ Server 进程二进制协议（MAA-Meow/scrcpy 同款数据流方向）
+ * App ↔ Server 进程二进制协议（MAA-Meow/scrcpy 同款数据流方向）。
  *
- * 帧格式：
- *   [4 字节大端 frame_size] [4 字节大端 type] [4 字节大端 payload_size] [payload bytes]
+ * 帧格式：[4 字节大端 frame_size] [4 字节大端 type] [4 字节大端 payload_size] [payload bytes]
  *
- * 消息类型：
- *   1. MSG_CREATE_VD         (App → Server) 创建虚拟显示器（不再带 Surface Parcel！）
- *   2. MSG_CREATE_VD_RESP     (Server → App) 创建结果
- *   3. MSG_PING               (App → Server) 心跳
- *   4. MSG_PONG               (Server → App) 心跳响应
- *   5. MSG_RELEASE_VD         (App → Server) 释放虚拟显示器
- *   6. MSG_RELEASE_VD_RESP   (Server → App) 释放完成
- *   7. MSG_FRAME             (Server → App) JPEG 帧（VD 画面内容，高频消息）
- *   8. MSG_FRAME_ACK          (App → Server) 帧已接收（可选，server 做 flow control 节流）
- *   9. MSG_TOUCH_DOWN/_MOVE/_UP (App → Server) 触摸事件，server 用 IInputManager.injectInputEvent 注入 MotionEvent
- *  10. MSG_KEY_BACK           (App → Server) 返回键，server 用 IInputManager.injectInputEvent 注入 KeyEvent(KEYCODE_BACK)
- *
- * 重要架构变更（修复 Parcel.marshall 失败）：
- *   旧方案 ❌：App 创建 AImageReader + Surface.writeToParcel + marshall() → socket → server
- *              → RuntimeException: Parcel contains binders/FDs（Surface 内藏 IGraphicBufferProducer Binder）
- *   新方案 ✅：server 端（shell uid）既创建 VD 也通过 ImageReader 读画面 → 压缩 JPEG →
- *              以 MSG_FRAME 消息通过 socket 发 byte[] → App 端 decodeByteArray → Bitmap
- *              → 注入到 NativeCapturer.frameBuffer（识图 + 预览共用）
- *              （与 scrcpy/MAA-Meow 同款数据流方向，绕开 Surface 跨进程死胡同）
+ * 踩坑（Parcel.marshall 失败）：旧方案 App 创建 AImageReader + Surface.writeToParcel + marshall()
+ * → RuntimeException: Parcel contains binders/FDs（Surface 内藏 IGraphicBufferProducer Binder）。
+ * 新方案 server 端既创建 VD 也通过 ImageReader 读画面 → 压缩 JPEG → MSG_FRAME 发 byte[]，
+ * 绕开 Surface 跨进程死胡同。
  */
 object VDProtocol {
 
@@ -54,11 +38,11 @@ object VDProtocol {
     const val MSG_TOUCH_UP = 11
     const val MSG_KEY_BACK = 12   // 注入 KEYCODE_BACK 到虚拟显示器（无需 payload，keyCode 固定）
 
-    /** 空 payload（PING/PONG/RELEASE_VD/FRAMES_ACK 等占位） */
+    /** 空 payload（PING/PONG/RELEASE_VD/FRAMES_ACK 等占位）。 */
     val EMPTY_PAYLOAD = ByteArray(0)
 
     /**
-     * 写一帧消息：4 字节大端 frame_size + (4 字节 type + 4 字节 payload_size + payload)
+     * 写一帧消息：4 字节大端 frame_size + (4 字节 type + 4 字节 payload_size + payload)。
      * 阻塞到写完并 flush。MSG_FRAME 等大帧调用方应自行节流（例如每 33ms 一帧即可）。
      */
     fun writeMessage(out: OutputStream, type: Int, payload: ByteArray) {
@@ -96,7 +80,7 @@ object VDProtocol {
                 (header[3].toInt() and 0xff)
 
         if (frameSize < 8 || frameSize > 32 * 1024 * 1024) {
-            // MSG_FRAME 单帧 JPEG 540x960 q=90 ~< 200KB；给 32MB 上限防恶意 length
+            // 32MB 上限防恶意 length（MSG_FRAME 单帧 JPEG 540x960 q=90 ~< 200KB）
             throw java.io.IOException("Invalid frame size: $frameSize (must be 8..32MB)")
         }
 
@@ -130,11 +114,10 @@ object VDProtocol {
 }
 
 /**
- * 创建虚拟显示器请求
+ * 创建虚拟显示器请求。
  *
- * 重要变更：**不再带 surfaceBytes**！
- * 旧版带 surfaceBytes → Parcel.marshall() 因 Surface 内藏 Binder/FD 直接抛 RuntimeException。
- * 新版 server 端自己通过 ImageReader.getSurface() 创建 VD 输出 Surface，App 端通过 MSG_FRAME 拿 JPEG 帧。
+ * 踩坑：不再带 surfaceBytes！旧版带 surfaceBytes → Parcel.marshall() 因 Surface 内藏 Binder/FD
+ * 直接抛 RuntimeException。新版 server 端通过 ImageReader.getSurface() 创建 VD 输出 Surface。
  */
 data class VDRequest(
     val width: Int,
@@ -142,9 +125,9 @@ data class VDRequest(
     val density: Int,
     val flags: Int,
     val name: String,
-    /** JPEG 质量 1~100（默认 90，识别足够）。数值越大帧越大延迟越高 */
+    /** JPEG 质量 1~100（默认 90，识别足够）。数值越大帧越大延迟越高。 */
     val jpegQuality: Int = 90,
-    /** 帧率上限（默认 30fps；识别/点击场景 15fps 也够用，省带宽） */
+    /** 帧率上限（默认 30fps；识别/点击场景 15fps 也够用，省带宽）。 */
     val maxFps: Int = 30
 ) {
     fun toByteArray(): ByteArray {
@@ -185,9 +168,7 @@ data class VDRequest(
     }
 }
 
-/**
- * 创建虚拟显示器响应
- */
+/** 创建虚拟显示器响应。 */
 data class VDResponse(
     val ok: Boolean,
     val displayId: Int,
@@ -224,20 +205,16 @@ data class VDResponse(
 }
 
 /**
- * 画面帧包（MSG_FRAME payload）
- *
- * Server 端通过 ImageReader 拿到 VD 画面 → 压缩为 JPEG byte[] → 打包成 FramePacket 发 socket。
- * App 端通过 fromByteArray 还原后调用 FramePacket.decodeBitmap() 拿到 Bitmap，
- * 再调用 NativeCapturer.injectExternalFrame(bitmap) 写入到 Native 端的 frameBuffer 供识图 + 预览。
+ * 画面帧包（MSG_FRAME payload）。
  *
  * 注意：width/height 显式传输是为了 App 端无需 decode 前就能做尺寸校验/内存池复用。
  */
 data class FramePacket(
     val width: Int,
     val height: Int,
-    /** JPEG 压缩后的字节流（带 SOI/EOI marker，BitmapFactory 能直接解码） */
+    /** JPEG 压缩后的字节流（带 SOI/EOI marker，BitmapFactory 能直接解码）。 */
     val jpegBytes: ByteArray,
-    /** 单调递增帧序号，App 端可据此判断是否丢帧 */
+    /** 单调递增帧序号，App 端可据此判断是否丢帧。 */
     val frameIndex: Long
 ) {
     fun toByteArray(): ByteArray {
@@ -255,7 +232,7 @@ data class FramePacket(
         }
     }
 
-    /** 解 JPEG 为 Bitmap（纯 Java 标准 API，无 native 依赖） */
+    /** 解 JPEG 为 Bitmap（纯 Java 标准 API，无 native 依赖）。 */
     fun decodeBitmap(): Bitmap? {
         return try {
             BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
@@ -301,13 +278,7 @@ data class FramePacket(
     }
 }
 
-/**
- * 触摸事件（MSG_TOUCH_DOWN / MSG_TOUCH_MOVE / MSG_TOUCH_UP 的 payload）
- *
- * 仅传输 (x, y) 坐标（虚拟显示器坐标系），action 由消息类型区分。
- * 编码方式：DataOutputStream 两个 Int（8 字节），不依赖 Parcel，简洁高效。
- * server 端收到后用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器。
- */
+/** 触摸事件（MSG_TOUCH_DOWN / MSG_TOUCH_MOVE / MSG_TOUCH_UP 的 payload）；action 由消息类型区分。 */
 data class TouchEvent(val x: Int, val y: Int) {
     fun toByteArray(): ByteArray {
         val bos = ByteArrayOutputStream(8)
