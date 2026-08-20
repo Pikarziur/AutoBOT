@@ -115,7 +115,7 @@ private fun MainScreen() {
     val vm: MonitorViewModel = viewModel()
     val isFullscreen by vm.isFullscreen.collectAsStateWithLifecycle()
     // 用 Int 索引保存 Tab 状态（rememberSaveable 对 enum 序列化兼容性不确定，Int 必定可保存）
-    var currentTabIndex by rememberSaveable { mutableStateOf(0) }
+    var currentTabIndex by rememberSaveable { mutableStateOf(1) }
     val currentTab = MainTab.entries.getOrElse(currentTabIndex) { MainTab.TASKS }
 
     Scaffold(

@@ -272,12 +272,12 @@ private fun FloatingStopButton(
 ) {
     val scale by animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 100, easing = FastOutSlowInEasing),
         label = "fabScale"
     )
     val alpha by animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = 200),
+        animationSpec = tween(durationMillis = 100),
         label = "fabAlpha"
     )
 
@@ -921,18 +921,27 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 MaterialTheme.colorScheme.primary
             }
 
+            val buttonElevation = if (morphProgress > 0.5f) 8.dp else 0.dp
+
             Button(
                 onClick = { if (isExecuting) vm.stopExecuting() else vm.executeTask() },
                 modifier = Modifier
                     .height(48.dp)
                     .width(buttonWidth)
-                    .offset(x = offsetX),
+                    .offset(x = offsetX)
+                    .shadow(buttonElevation, RoundedCornerShape(24.dp)),
                 shape = RoundedCornerShape(24.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = containerColor,
                     contentColor = Color.White
                 ),
-                contentPadding = PaddingValues(0.dp)
+                contentPadding = PaddingValues(0.dp),
+                elevation = ButtonDefaults.buttonElevation(
+                    pressedElevation = 0.dp,
+                    focusedElevation = 0.dp,
+                    hoveredElevation = 0.dp,
+                    defaultElevation = 0.dp
+                )
             ) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
