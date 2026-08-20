@@ -10,7 +10,8 @@ data class TaskFile(
     val description: String,
     val filePath: String,
     val actions: List<TaskAction> = emptyList(),
-    val program: ProgramTask? = null
+    val program: ProgramTask? = null,
+    val recognition: RecognitionTask? = null
 ) {
     companion object {
         fun fromJson(json: String, id: String, filePath: String): TaskFile? {
@@ -18,6 +19,17 @@ data class TaskFile(
                 val root = JSONObject(json)
                 val name = root.optString("name", id).ifBlank { id }
                 val description = root.optString("description", "")
+
+                val recognitionObj = root.optJSONObject("recognition")
+                if (recognitionObj != null) {
+                    val recognition = RecognitionTask.fromJson(recognitionObj)
+                    if (recognition != null) {
+                        return TaskFile(
+                            id = id, name = name, description = description,
+                            filePath = filePath, recognition = recognition
+                        )
+                    }
+                }
 
                 val programObj = root.optJSONObject("program")
                 if (programObj != null) {
@@ -177,6 +189,44 @@ data class TaskAction(
                 )
                 TaskActionType.BACK -> TaskAction(type = type)
             }
+        }
+    }
+}
+
+enum class RecognitionTaskMode {
+    TEMPLATE,
+    OCR,
+    BOTH;
+
+    companion object {
+        fun fromString(s: String?): RecognitionTaskMode? {
+            if (s.isNullOrBlank()) return null
+            return RecognitionTaskMode.values().firstOrNull { it.name.equals(s, ignoreCase = true) }
+        }
+    }
+}
+
+data class RecognitionTask(
+    val mode: RecognitionTaskMode,
+    val targetText: String = "",
+    val templatePath: String = "",
+    val threshold: Double = 0.8,
+    val timeoutMs: Long = 30_000L,
+    val intervalMs: Long = 500L,
+    val delayAfterSuccessMs: Long = 2000L
+) {
+    companion object {
+        fun fromJson(o: JSONObject): RecognitionTask? {
+            val mode = RecognitionTaskMode.fromString(o.optString("mode")) ?: return null
+            return RecognitionTask(
+                mode = mode,
+                targetText = o.optString("targetText", ""),
+                templatePath = o.optString("templatePath", ""),
+                threshold = o.optDouble("threshold", 0.8),
+                timeoutMs = o.optLong("timeoutMs", 30_000L),
+                intervalMs = o.optLong("intervalMs", 500L),
+                delayAfterSuccessMs = o.optLong("delayAfterSuccessMs", 2000L)
+            )
         }
     }
 }

@@ -3,14 +3,18 @@ package com.autobot.app.manager
 import com.autobot.app.model.ProgramAction
 import com.autobot.app.model.ProgramActionType
 import com.autobot.app.model.ProgramTask
+import com.autobot.app.model.RecognitionTask
+import com.autobot.app.model.RecognitionTaskMode
 import com.autobot.app.model.TaskAction
 import com.autobot.app.model.TaskActionType
 import com.autobot.app.model.TaskFile
+import com.autobot.app.recognition.RecognitionManager
 import com.autobot.app.service.CompositionService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -54,8 +58,12 @@ object TaskExecutor {
 
         runningJob = scope.launch(Dispatchers.IO) {
             val program = taskFile.program
-            val actionCount = if (program != null) program.groups * program.actions.size
-                              else taskFile.actions.size
+            val recognition = taskFile.recognition
+            val actionCount = when {
+                program != null -> program.groups * program.actions.size
+                recognition != null -> 1
+                else -> taskFile.actions.size
+            }
             val taskStartMs = System.currentTimeMillis()
             onLog("")
             onLog("╔══════════════════════════════════════════╗")
@@ -66,10 +74,10 @@ object TaskExecutor {
             onLog("╚══════════════════════════════════════════╝")
 
             try {
-                if (program != null) {
-                    executeProgram(program, compositionService, onLog)
-                } else {
-                    executeActions(taskFile.actions, compositionService, onLog)
+                when {
+                    recognition != null -> executeRecognition(recognition, compositionService, onLog)
+                    program != null -> executeProgram(program, compositionService, onLog)
+                    else -> executeActions(taskFile.actions, compositionService, onLog)
                 }
                 if (cancelFlag.get()) {
                     onLog("")
@@ -362,5 +370,67 @@ object TaskExecutor {
 
     private fun lerp(start: Int, end: Int, t: Float): Int {
         return (start + (end - start) * t).toInt()
+    }
+
+    private suspend fun executeRecognition(
+        task: RecognitionTask,
+        cs: CompositionService,
+        onLog: (String) -> Unit
+    ) {
+        onLog("")
+        onLog("📋 识别配置：")
+        onLog("   ├─ 模式：${task.mode}")
+        onLog("   ├─ 目标文字：${if (task.targetText.isNotBlank()) "「${task.targetText}」" else "无"}")
+        onLog("   ├─ 超时：${task.timeoutMs}ms")
+        onLog("   ├─ 抓图间隔：${task.intervalMs}ms")
+        onLog("   └─ 成功后延迟：${task.delayAfterSuccessMs}ms")
+        onLog("")
+
+        val startTime = System.currentTimeMillis()
+        var attempts = 0
+        val targetText = task.targetText
+
+        while (!cancelFlag.get()) {
+            val elapsed = System.currentTimeMillis() - startTime
+            if (elapsed >= task.timeoutMs) {
+                onLog("❌ 找不到目标文字[$targetText]（超时 ${task.timeoutMs}ms，尝试 $attempts 次）")
+                return
+            }
+
+            attempts++
+            val bitmap = cs.getFrameBufferBitmap()
+            if (bitmap == null) {
+                onLog("[${attempts.toString().padStart(3, '0')}] ⚠️  frameBuffer 为空，等待下一轮")
+                delay(task.intervalMs)
+                continue
+            }
+
+            onLog("[${attempts.toString().padStart(3, '0')}] 📸 抓图成功 ${bitmap.width}×${bitmap.height}")
+
+            when (task.mode) {
+                RecognitionTaskMode.OCR, RecognitionTaskMode.BOTH -> {
+                    val results = RecognitionManager.recognizeText(bitmap)
+                    val match = results.find { it.text.contains(targetText) }
+                    if (match != null) {
+                        onLog("  └─ ✅ 已找到[$targetText]，并且已经完成点击")
+                        onLog("     └─ 坐标：(${match.x}, ${match.y})")
+                        onLog("     └─ 原文：${match.text}")
+                        cs.injectTouchDown(match.x, match.y)
+                        delay(50)
+                        cs.injectTouchUp(match.x, match.y)
+                        onLog("  └─ ✓ 点击完成，等待 ${task.delayAfterSuccessMs}ms 缓冲")
+                        delay(task.delayAfterSuccessMs)
+                        return
+                    } else {
+                        onLog("  └─ ❌ 找不到目标文字[$targetText]（识别到 ${results.size} 个文字块）")
+                    }
+                }
+                RecognitionTaskMode.TEMPLATE -> {
+                    onLog("  └─ ⚠️  TEMPLATE 模式暂未实现模板加载，跳过")
+                }
+            }
+
+            delay(task.intervalMs)
+        }
     }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "ocr",
+  "description": "OCR识别任务：30秒内识别到文字'我的'则点击中心坐标",
+  "recognition": {
+    "mode": "OCR",
+    "targetText": "我的",
+    "timeoutMs": 30000,
+    "intervalMs": 500,
+    "delayAfterSuccessMs": 2000
+  }
+}

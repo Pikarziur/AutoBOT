@@ -17,6 +17,8 @@ import com.autobot.app.manager.TaskFileManager
 import com.autobot.app.manager.TaskManager
 import com.autobot.app.model.TaskFile
 import com.autobot.app.nativelib.NativeCapturer
+import com.autobot.app.recognition.RecognitionExecutor
+import com.autobot.app.recognition.RecognitionMode
 import com.autobot.app.service.CompositionService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -280,15 +282,47 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     /** */
     fun stopExecuting() {
-        if (!_isExecuting.value && !TaskExecutor.isExecuting()) {
+        if (!_isExecuting.value && !TaskExecutor.isExecuting() && !RecognitionExecutor.isExecuting()) {
             return
         }
         TaskExecutor.stop()
+        RecognitionExecutor.stop()
         val cnt = TaskManager.stopAllTasks()
         appendLauncherLog("[${stamp()}] ⏹ 用户点击停止：已请求结束 $cnt 个任务")
         // 不在此处查询 _isExecuting：TaskExecutor.stop 的 cancelAndJoin 在独立协程中异步执行，
         // 此处查 isExecuting() 可能仍返回 true（竞态）。按钮状态交给 listener.onTaskStopped 置 false。
         _executeMessage.value = if (cnt > 0) "已停止任务" else "当前没有运行中的任务"
+    }
+
+    fun startRecognitionTask(
+        mode: RecognitionMode,
+        template: android.graphics.Bitmap? = null,
+        targetText: String? = null,
+        threshold: Double = 0.8,
+        maxAttempts: Int = 0
+    ) {
+        val vdDisplayId = compositionService.displayId
+        if (vdDisplayId <= 0) {
+            _executeMessage.value = "虚拟显示器未启动，请先点击播放按钮"
+            return
+        }
+        if (RecognitionExecutor.isExecuting()) {
+            _executeMessage.value = "识别任务已在执行中"
+            return
+        }
+
+        _isExecuting.value = true
+        RecognitionExecutor.start(
+            compositionService = compositionService,
+            scope = viewModelScope,
+            mode = mode,
+            template = template,
+            targetText = targetText,
+            threshold = threshold,
+            maxAttempts = maxAttempts,
+            onLog = { line -> TaskManager.notifyOutput("recognition", line) }
+        )
+        Log.i(TAG, "RecognitionExecutor started: mode=$mode, text=$targetText, vd=$vdDisplayId")
     }
 
     fun startVirtualDisplay(width: Int = -1, height: Int = -1) {

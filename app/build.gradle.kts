@@ -149,6 +149,12 @@ dependencies {
     implementation("androidx.compose.ui:ui-viewbinding")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // OpenCV4Android：模板匹配、图像处理（4.9.0 起官方发布到 Maven Central，无需 NDK）
+    implementation("org.opencv:opencv:4.9.0")
+
+    // ML Kit Text Recognition：端侧 OCR，支持中文（离线，免费）
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.0")
+
     // 测试
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

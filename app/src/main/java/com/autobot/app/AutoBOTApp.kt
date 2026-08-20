@@ -6,6 +6,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import com.autobot.app.manager.ShizukuManager
 import com.autobot.app.manager.TaskFileManager
 import com.autobot.app.service.CompositionService
+import org.opencv.android.OpenCVLoader
 import rikka.shizuku.Shizuku
 
 /**
@@ -55,6 +56,18 @@ class AutoBOTApp : Application() {
         instance = this
 
         installGlobalCrashHandler()
+
+        // 初始化 OpenCV（4.9.0 用 initLocal 替代已废弃的 initAsync/initDebug）
+        // 必须在使用任何 OpenCV API 之前调用，加载 native 库 libopencv_java4.so
+        try {
+            if (OpenCVLoader.initLocal()) {
+                Log.i(TAG, "OpenCV loaded successfully")
+            } else {
+                Log.e(TAG, "OpenCV initialization failed!")
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "OpenCV init error", e)
+        }
 
         // 初始化任务文件管理器（替代旧版 ScriptTaskManager）：扫描 filesDir/tasks/ + 装载 assets/tasks/
         try {
