@@ -137,11 +137,19 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * TaskManager 事件监听器：将任务生命周期事件转为 UI 日志
+     *
+     * ★按钮状态同步★：
+     *   - onTaskStarted → _isExecuting = true（按钮变红「■ 停止」）
+     *   - onTaskCompleted / onTaskStopped / onTaskError → _isExecuting = false（按钮变回「▶ 执行任务」）
+     *
+     * 不使用 TaskExecutor.isExecuting() 查询，因为 notifyCompleted 在协程内部
+     * 调用时 runningJob.isActive 仍为 true（finally 块尚未执行），存在时序竞态，
+     * 会导致按钮卡在"停止"状态不变回。直接按事件语义置 false 最可靠。
      */
     private val taskListener = object : TaskManager.TaskListener {
         override fun onTaskStarted(taskId: String, taskName: String) {
             appendScriptLog("[${stamp()}] ⟶ 启动任务『$taskName』 (id=${taskId.take(4)})")
-            _isExecuting.value = TaskExecutor.isExecuting()
+            _isExecuting.value = true
         }
 
         override fun onTaskOutput(taskId: String, line: String) {
@@ -150,17 +158,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onTaskCompleted(taskId: String) {
             appendScriptLog("[${stamp()}] ✓ 任务完成 (id=${taskId.take(4)})")
-            _isExecuting.value = TaskExecutor.isExecuting()
+            _isExecuting.value = false
         }
 
         override fun onTaskStopped(taskId: String, reason: String) {
             appendScriptLog("[${stamp()}] ⏹ 任务被停止 (id=${taskId.take(4)}, reason=$reason)")
-            _isExecuting.value = TaskExecutor.isExecuting()
+            _isExecuting.value = false
         }
 
         override fun onTaskError(taskId: String, error: String) {
             appendScriptLog("[${stamp()}] ✗ 任务出错 (id=${taskId.take(4)}): $error")
-            _isExecuting.value = TaskExecutor.isExecuting()
+            _isExecuting.value = false
         }
     }
 
@@ -381,7 +389,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         // 注意：TaskExecutor.stop 内部已 cancel 协程；TaskManager.notifyStopped 由 TaskExecutor 上报
         val cnt = TaskManager.stopAllTasks()
         appendLauncherLog("[${stamp()}] ⏹ 用户点击停止：已请求结束 $cnt 个任务")
-        _isExecuting.value = TaskExecutor.isExecuting()
+        // 不在此处查询 _isExecuting：TaskExecutor.stop 的 cancelAndJoin 在独立协程中异步执行，
+        // 此处查 isExecuting() 可能仍返回 true（竞态）。按钮状态交给 listener.onTaskStopped 置 false。
         _executeMessage.value = if (cnt > 0) "已停止任务" else "当前没有运行中的任务"
     }
 
