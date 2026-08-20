@@ -737,12 +737,12 @@ private fun TasksTabsSection(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = { Text("任务", style = MaterialTheme.typography.labelLarge) }
+                        text = { Text("任务", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
                     )
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = { Text("日志", style = MaterialTheme.typography.labelLarge) }
+                        text = { Text("日志", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
                     )
                 }
 
@@ -784,11 +784,12 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             MaterialTheme.colorScheme.outline
         }
         val borderWidth = if (dropdownExpanded) 2.dp else 1.dp
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = contentHPadding, vertical = 20.dp)
         ) {
+            val dropdownWidth = maxWidth
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -831,7 +832,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                 expanded = dropdownExpanded,
                 onDismissRequest = { dropdownExpanded = false },
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .width(dropdownWidth)
                     .clip(RoundedCornerShape(12.dp))
                     .background(MaterialTheme.colorScheme.surface)
             ) {
@@ -892,7 +893,7 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.weight(1.2f))
+        Spacer(modifier = Modifier.weight(1f))
 
         val morphProgress by animateFloatAsState(
             targetValue = if (isExecuting) 1f else 0f,
@@ -903,7 +904,8 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding),
+                .padding(horizontal = contentHPadding)
+                .padding(bottom = 24.dp),
             contentAlignment = Alignment.Center
         ) {
             val maxButtonWidth = maxWidth
@@ -957,7 +959,6 @@ private fun TasksTabContent(vm: MonitorViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.weight(0.3f))
         }
 
     }
