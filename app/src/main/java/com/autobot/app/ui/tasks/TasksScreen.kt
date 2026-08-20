@@ -841,10 +841,11 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         // ---------- 1. 下拉列表（占位，后续完善逻辑） ----------
         // 样式与应用整体下拉框一致：12dp 圆角 + 1dp 描边 + 44dp 高 + 白底
         // 暂无选项与点击逻辑，仅展示占位文本与下拉箭头
+        // 上下间距 16dp：与顶部卡片边及下方留白形成"呼吸感"
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp)
+                .padding(horizontal = contentHPadding, vertical = 16.dp)
                 .height(44.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surface)
@@ -880,9 +881,10 @@ private fun TasksTabContent(vm: MonitorViewModel) {
 
         // ---------- 3. 底部执行任务按钮（形变悬浮按钮） ----------
         // 点击「执行任务」后，按钮固定右侧边缘，从左向右平移缩放：
-        //   阶段1（morph 0→0.5）：宽度满宽→48dp、圆角 12dp→24dp（正圆），执行内容淡出
+        //   阶段1（morph 0→0.5）：宽度 220dp→48dp、圆角始终保持最大 24dp（= 高度一半），执行内容淡出
         //   阶段2（morph 0.5→1）：颜色 primary→红色、显示 Stop 正方形图标、投影 0dp→8dp（悬浮感）
-        // 再次点击（停止态）或任务结束时，形变对称还原为宽按钮。
+        // 再次点击（停止态）或任务结束时，形变对称还原为胶囊形宽按钮。
+        // 圆角始终拉到最大 24dp：执行态构成胶囊形宽按钮，停止态构成正圆，视觉过渡自然。
         val canExecute = !isExecuting
         val isStopButton = isExecuting
         val executeLabel = "执行任务"
@@ -899,16 +901,20 @@ private fun TasksTabContent(vm: MonitorViewModel) {
         val redProgress = ((morphProgress - 0.5f) / 0.5f).coerceIn(0f, 1f)
 
         // 外层 BoxWithConstraints 右对齐：按钮缩放时右侧边缘保持固定
+        // 上下间距 16dp：与下拉列表统一呼吸节奏，不与卡片底边紧贴
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = contentHPadding, vertical = 12.dp),
+                .padding(horizontal = contentHPadding, vertical = 16.dp),
             contentAlignment = Alignment.CenterEnd
         ) {
-            // 宽度：满宽 → 48dp（与高度相等构成正圆）
-            val animatedWidth = lerp(maxWidth, 48.dp, shrinkProgress)
-            // 圆角：12dp → 24dp（= 48/2，正圆）
-            val animatedCorner = lerp(12.dp, 24.dp, shrinkProgress)
+            // ★合适宽度：执行态取容器宽度与 220dp 的较小值（小屏自适应），停止态缩为 48dp 正圆
+            val initialWidth = maxWidth.coerceAtMost(220.dp)
+            val animatedWidth = lerp(initialWidth, 48.dp, shrinkProgress)
+            // ★圆角拉到最大：始终 24dp（= 48dp 高度的一半）
+            //   - 执行态宽按钮：胶囊形（两端半圆，与悬浮按钮风格统一）
+            //   - 停止态正圆：与高度 48dp 构成正圆，配合红色 + 投影形成 FAB 视觉
+            val buttonCorner = 24.dp
             // 容器颜色：primary → 红色 #FF3B30（阶段2 才变色）
             val containerColor = lerpColor(
                 MaterialTheme.colorScheme.primary,
@@ -929,10 +935,10 @@ private fun TasksTabContent(vm: MonitorViewModel) {
                     .width(animatedWidth)
                     .shadow(
                         elevation = animatedElevation,
-                        shape = RoundedCornerShape(animatedCorner),
+                        shape = RoundedCornerShape(buttonCorner),
                         clip = false
                     ),
-                shape = RoundedCornerShape(animatedCorner),
+                shape = RoundedCornerShape(buttonCorner),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = containerColor,
                     contentColor = Color.White,
