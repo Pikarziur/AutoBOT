@@ -96,8 +96,12 @@ enum class TaskActionType {
 
     companion object {
         /** 字符串 → 枚举，未知类型返回 null（调用方跳过该 action） */
-        fun fromString(s: String?): TaskActionType? =
-            s?.let { valueOfOrNull(it.uppercase()) }
+        fun fromString(s: String?): TaskActionType? {
+            if (s.isNullOrBlank()) return null
+            // 不依赖 Kotlin 1.9 实验性 valueOfOrNull，用 values().firstOrNull 兼容所有版本
+            val key = s.uppercase()
+            return TaskActionType.values().firstOrNull { it.name == key }
+        }
     }
 }
 

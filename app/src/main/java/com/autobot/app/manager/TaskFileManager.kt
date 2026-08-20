@@ -20,7 +20,7 @@ import java.io.File
  *     ├ <user-imported>.json    ← 用户后续自定义任务
  *     └ ...
  *
- * 预置任务来源：assets/tasks/*.json —— 启动时若 filesDir/tasks/ 不存在
+ * 预置任务来源：assets 下的 tasks 目录中的 .json 文件 —— 启动时若 filesDir/tasks/ 不存在
  * 或对应文件缺失/内容不一致，会用 assets 最新内容覆盖落盘，保证
  * "改了 assets 任务文件 → 下次启动 app 即生效"，无需清数据。
  *
@@ -56,7 +56,7 @@ object TaskFileManager {
      *   1. 注入 ApplicationContext
      *   2. 确保 filesDir/tasks/ 目录存在
      *   3. 从 assets/tasks/ 装载预置任务（覆盖式更新）
-     *   4. 扫描 filesDir/tasks/ 全部 *.json 解析到内存
+     *   4. 扫描 filesDir/tasks/ 全部 .json 文件解析到内存
      */
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -132,7 +132,7 @@ object TaskFileManager {
     }
 
     /**
-     * 扫描 filesDir/tasks/ 全部 *.json 解析到内存缓存
+     * 扫描 filesDir/tasks/ 全部 .json 文件解析到内存缓存
      *
      * 解析失败的文件会被跳过（不会影响其他任务加载）。
      */
