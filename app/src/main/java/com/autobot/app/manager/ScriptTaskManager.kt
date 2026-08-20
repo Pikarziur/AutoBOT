@@ -258,17 +258,11 @@ object ScriptTaskManager {
         }
 
         var imported = 0
+        var updated = 0
         var skipped = 0
         for (filename in assetFiles) {
             // 仅处理 .sh 文件（忽略 .gitkeep 等占位文件）
             if (!filename.endsWith(".sh", ignoreCase = true)) continue
-
-            // 幂等去重：按 originalName 检查是否已导入
-            val alreadyImported = cachedTasks.any { it.originalName == filename }
-            if (alreadyImported) {
-                skipped++
-                continue
-            }
 
             // 读 assets/scripts/<filename> 全部内容
             val content = try {
@@ -280,6 +274,32 @@ object ScriptTaskManager {
                 continue
             }
 
+            // 幂等去重：按 originalName 检查是否已导入
+            val existingTask = cachedTasks.find { it.originalName == filename }
+            if (existingTask != null) {
+                // ★已导入：用 assets 最新内容覆盖 filesDir 里的旧文件
+                //   解决"改了 assets 脚本但不生效"的问题（旧缓存一直被用）
+                try {
+                    val f = java.io.File(existingTask.scriptPath)
+                    if (f.exists()) {
+                        f.writeText(content)
+                        f.setExecutable(true, true)
+                        updated++
+                        Log.i(TAG, "Updated bundled script from assets: ${existingTask.name} -> ${f.absolutePath}")
+                    } else {
+                        // 文件被手动删除了，重新写入
+                        f.parentFile?.mkdirs()
+                        f.writeText(content)
+                        f.setExecutable(true, true)
+                        updated++
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to update bundled script $filename", e)
+                }
+                skipped++
+                continue
+            }
+
             // 落盘 + 注册到 tasks.json（复用已有逻辑）
             val displayName = filename.removeSuffix(".sh")
             importScriptFromContent(displayName, content, filename)?.let {
@@ -287,7 +307,7 @@ object ScriptTaskManager {
                 Log.i(TAG, "Loaded bundled script: ${it.name} (${filename})")
             }
         }
-        Log.i(TAG, "loadBundledScripts done: imported=$imported, skipped=$skipped, total=${cachedTasks.size}")
+        Log.i(TAG, "loadBundledScripts done: imported=$imported, updated=$updated, skipped=$skipped, total=${cachedTasks.size}")
     }
 
     /**

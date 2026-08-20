@@ -212,6 +212,7 @@ swipe_human() {
             [ $sx -gt $x_max ] && sx=$x_max
             [ $ex -lt $x_min ] && ex=$x_min
             [ $ex -gt $x_max ] && ex=$x_max
+            echo "   swipe(mode1): sx=$sx sy=$sy ex=$ex ey=$ey dur=$dur"
             input swipe "$sx" "$sy" "$ex" "$ey" "$dur"
             ;;
         2)
@@ -228,6 +229,7 @@ swipe_human() {
             [ $sx -gt $x_max ] && sx=$x_max
             [ $ex -lt $x_min ] && ex=$x_min
             [ $ex -gt $x_max ] && ex=$x_max
+            echo "   swipe(mode2): sx=$sx sy=$sy ex=$ex ey=$ey dur=$dur"
             input swipe "$sx" "$sy" "$ex" "$ey" "$dur"
             ;;
         3)
@@ -251,6 +253,7 @@ swipe_human() {
             ry=$(rand_int 30 80)
             m2_y=$(( sy + (ey - sy) * 2 / 3 - ry ))
             seg_dur=$(rand_int 150 300)
+            echo "   swipe(mode3 seg1): $sx $sy -> $m1_x $m1_y dur=$seg_dur"
             input swipe "$sx" "$sy" "$m1_x" "$m1_y" "$seg_dur"
             input swipe "$m1_x" "$m1_y" "$m2_x" "$m2_y" "$seg_dur"
             input swipe "$m2_x" "$m2_y" "$ex" "$ey" "$seg_dur"
@@ -273,6 +276,7 @@ swipe_human() {
             ry=$(rand_int 30 80)
             m2_y=$(( sy + (ey - sy) * 2 / 3 - ry ))
             seg_dur=$(rand_int 150 300)
+            echo "   swipe(mode4 seg1): $sx $sy -> $m1_x $m1_y dur=$seg_dur"
             input swipe "$sx" "$sy" "$m1_x" "$m1_y" "$seg_dur"
             input swipe "$m1_x" "$m1_y" "$m2_x" "$m2_y" "$seg_dur"
             input swipe "$m2_x" "$m2_y" "$ex" "$ey" "$seg_dur"
