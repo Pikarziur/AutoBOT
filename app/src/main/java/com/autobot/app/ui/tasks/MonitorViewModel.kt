@@ -307,11 +307,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * 停止映射到 VD 的目标应用（force-stop），并重置 VD 目标状态
+     * 停止映射到 VD 的目标应用（force-stop），并停止 VD 释放资源
      *
      * 用户在 AppLauncherRow 点击「停止」并经确认弹窗确认后调用。
-     * 仅关闭目标应用进程，不停止 VD 本身（VD 仍可继续运行/复用启动其他应用）。
-     * 无论 force-stop 是否成功都重置 _vdTargetPackage，避免按钮卡在"停止"状态。
+     * ★资源策略★：目标应用 + VD 同时关闭，释放全部资源，避免 VD 空跑浪费电。
+     *   再次点击「启动」时会由 launchAppWithOrientationAdaptation 重新创建 VD 并启动应用。
+     *
+     * ★执行顺序优化★：
+     *   先重置所有 UI 状态（按钮立即变回"启动"+ 预览区标签立即更新），
+     *   再异步执行 force-stop + stopVirtualDisplay。
+     *   无论后台命令是否成功都保持重置状态，防止按钮卡在"停止"。
      */
     fun stopTargetApp() {
         val pkg = _vdTargetPackage.value
@@ -319,16 +324,23 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             showSnack("当前没有映射到 VD 的目标应用")
             return
         }
+        // ★先重置全部状态：UI 立即响应
+        //   _vdTargetPackage=null → 按钮变回"启动"，预览区显示"未启动"
+        //   _isRunning=false → 预览区不再可点击进入全屏，状态标签变灰
+        _vdTargetPackage.value = null
+        _vdTargetSize.value = null
+        _isRunning.value = false
+        appendLauncherLog("[${stamp()}] ⏹ 正在停止目标应用 pkg=$pkg 并关闭虚拟显示器 ...")
+        // 再异步执行：force-stop 目标应用 + stopVirtualDisplay 释放 VD 资源
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = AppManager.forceStopApp(pkg)
-            if (ok) {
-                appendLauncherLog("[${stamp()}] ⏹ 已停止目标应用 pkg=$pkg（映射已解除）")
+            val appOk = AppManager.forceStopApp(pkg)
+            compositionService.stopVirtualDisplay()
+            if (appOk) {
+                appendLauncherLog("[${stamp()}] ✓ 已停止目标应用 pkg=$pkg 并关闭虚拟显示器")
             } else {
-                appendLauncherLog("[${stamp()}] ✗ 停止目标应用失败 pkg=$pkg，仍重置映射状态")
+                appendLauncherLog("[${stamp()}] ✗ 应用停止失败 pkg=$pkg（VD 已关闭，状态已重置）")
             }
-            _vdTargetPackage.value = null
-            _vdTargetSize.value = null
-            showSnack(if (ok) "已停止 $pkg" else "停止失败，已重置映射状态")
+            showSnack(if (appOk) "已停止 $pkg 并关闭 VD" else "VD 已关闭，应用停止失败")
         }
     }
 
