@@ -190,7 +190,7 @@ fun TasksScreen(
                         isRunning = isRunning,
                         isSurfaceAvailable = isSurfaceAvailable,
                         displaySize = displaySize,
-                        onClick = { if (isRunning) isFullscreen = true }
+                        onClick = { if (isAppMapped) isFullscreen = true }
                     ) {
                         previewContent()
                     }
@@ -590,9 +590,11 @@ private fun FullscreenMonitor(
                 IconButton(
                     onClick = onExit,
                     modifier = Modifier
+                        // ★以按钮自身右上角为锚点（TopEnd 让按钮右上角对齐 VD 右上角），
+                        // 再用 padding 让按钮整体往左下偏移一点，避免紧贴 VD 边缘
                         .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, end = 8.dp)
                         .size(24.dp)
-                        .padding(0.dp)
                         .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) {
                     Icon(

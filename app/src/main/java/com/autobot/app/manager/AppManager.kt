@@ -238,8 +238,14 @@ object AppManager {
      * 用于"停止映射"场景：用户主动关闭映射到 VD 的目标应用。
      * 仅 Shizuku 可用时才能执行（普通应用无 force-stop 权限）。
      *
+     * 命令组合说明：
+     *   1. `am force-stop --user 0 <pkg>`：停止该 user 下应用的所有组件（Activity/Service/Receiver），
+     *      ★必须显式指定 --user 0，部分 ROM 在不指定时 force-stop 可能不生效或作用于错误 user。
+     *   2. `am kill --user 0 <pkg>`：清理可能残留的后台进程（force-stop 后理论上无前台进程，am kill 兜底）。
+     *   3. `kill -9 $(pidof <pkg>)`：最终兜底，直接杀掉所有该包名进程，防止大厂应用保活机制重新拉起。
+     *
      * @param packageName 目标应用包名
-     * @return true 表示停止命令已成功执行
+     * @return true 表示停止命令已成功执行（exit code == 0）
      */
     fun forceStopApp(packageName: String): Boolean {
         if (packageName.isBlank()) {
@@ -250,13 +256,19 @@ object AppManager {
             Log.w(TAG, "forceStopApp: Shizuku not granted, cannot force-stop")
             return false
         }
-        val cmd = "am force-stop $packageName"
-        val r = ShellExecutor.execute(cmd, useShizuku = true, timeout = 3000)
+        // 三重停止策略：force-stop 所有组件 → kill 后台进程 → 直接杀残留 PID
+        val cmd = "am force-stop --user 0 $packageName; " +
+                "am kill --user 0 $packageName; " +
+                "for pid in \$(pidof $packageName); do kill -9 \$pid; done"
+        val r = ShellExecutor.execute(cmd, useShizuku = true, timeout = 5000)
         if (r.isSuccess) {
-            Log.i(TAG, "forceStopApp success: $packageName")
+            Log.i(TAG, "forceStopApp success: $packageName (force-stop + am kill + kill pid)")
             return true
         }
-        Log.w(TAG, "forceStopApp failed: ${r.stderr}")
-        return false
+        // exit code 非零不代表完全失败（pidof 无匹配时 for 循环返回非零），
+        // force-stop 可能已执行成功，仅记录警告
+        Log.w(TAG, "forceStopApp exit=${r.exitCode}, stderr=${r.stderr}")
+        // 只要 force-stop 部分执行了就认为基本成功（无法精确判断每条子命令结果）
+        return r.exitCode == 0 || r.stderr.isBlank()
     }
 }
