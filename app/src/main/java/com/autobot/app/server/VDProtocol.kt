@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Parcel
 import android.util.Log
+import com.autobot.app.util.BitmapPool
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -42,63 +43,84 @@ object VDProtocol {
     val EMPTY_PAYLOAD = ByteArray(0)
 
     /**
-     * 写一帧消息：4 字节大端 frame_size + (4 字节 type + 4 字节 payload_size + payload)。
+     * 写一帧消息：4 字节大端 frame_size + 4 字节大端 type + 4 字节大端 payload_size + payload。
      * 阻塞到写完并 flush。MSG_FRAME 等大帧调用方应自行节流（例如每 33ms 一帧即可）。
+     *
+     * CPU 优化：去掉 ByteArrayOutputStream + DataOutputStream + toByteArray() 三层中间分配。
+     * 直接构造 12 字节 header，配 2 次 write 调用：
+     *   - 12 字节 header（frame_size+type+payload_size）
+     *   - payload 字节
+     * 原 8MB RGBA 帧需分配 ~16MB 中间 byte[]，现仅 12 字节。
      */
     fun writeMessage(out: OutputStream, type: Int, payload: ByteArray) {
-        val bos = ByteArrayOutputStream()
-        DataOutputStream(bos).use { d ->
-            d.writeInt(type)
-            d.writeInt(payload.size)
-            d.write(payload)
-        }
-        val frame = bos.toByteArray()
+        val payloadSize = payload.size
+        val frameSize = 8 + payloadSize  // type(4) + payloadSize(4) + payload
 
-        val header = ByteArray(4)
-        header[0] = (frame.size ushr 24).toByte()
-        header[1] = (frame.size ushr 16).toByte()
-        header[2] = (frame.size ushr 8).toByte()
-        header[3] = frame.size.toByte()
+        // 12 字节 header：frame_size(4) + type(4) + payload_size(4)
+        val header = ByteArray(12)
+        header[0]  = (frameSize ushr 24).toByte()
+        header[1]  = (frameSize ushr 16).toByte()
+        header[2]  = (frameSize ushr 8).toByte()
+        header[3]  = frameSize.toByte()
+        header[4]  = (type ushr 24).toByte()
+        header[5]  = (type ushr 16).toByte()
+        header[6]  = (type ushr 8).toByte()
+        header[7]  = type.toByte()
+        header[8]  = (payloadSize ushr 24).toByte()
+        header[9]  = (payloadSize ushr 16).toByte()
+        header[10] = (payloadSize ushr 8).toByte()
+        header[11] = payloadSize.toByte()
 
         synchronized(out) {
             out.write(header)
-            out.write(frame)
+            if (payloadSize > 0) {
+                out.write(payload)
+            }
             out.flush()
         }
     }
 
     /**
      * 阻塞读一帧消息：返回 (type, payload)。EOF/非法帧长度抛 IOException（上层视为 socket 断连）。
-     * MSG_FRAME payload 较大（约 50KB~200KB，JPEG）时也安全（16MB upper bound）。
+     * MSG_FRAME payload 较大（RGBA 直传 8MB 或 JPEG 50-200KB）时也安全（32MB upper bound）。
+     *
+     * CPU 优化：先读 12 字节 header 拿到 frame_size+type+payload_size，
+     * 直接按 payload_size 分配 payload buffer 从 input stream 读，
+     * 跳过原方案的 frame = ByteArray(frameSize) 中间缓冲（8MB 帧省 8MB 堆分配）。
      */
     fun readMessage(input: InputStream): Pair<Int, ByteArray> {
-        val header = ByteArray(4)
+        val header = ByteArray(12)
         readFully(input, header)
+
         val frameSize = ((header[0].toInt() and 0xff) shl 24) or
                 ((header[1].toInt() and 0xff) shl 16) or
                 ((header[2].toInt() and 0xff) shl 8) or
                 (header[3].toInt() and 0xff)
 
         if (frameSize < 8 || frameSize > 32 * 1024 * 1024) {
-            // 32MB 上限防恶意 length（MSG_FRAME 单帧 JPEG 540x960 q=90 ~< 200KB）
+            // 32MB 上限防恶意 length（MSG_FRAME 单帧 RGBA 1080P ~8MB，JPEG ~200KB）
             throw java.io.IOException("Invalid frame size: $frameSize (must be 8..32MB)")
         }
 
-        val frame = ByteArray(frameSize)
-        readFully(input, frame)
+        val type = ((header[4].toInt() and 0xff) shl 24) or
+                ((header[5].toInt() and 0xff) shl 16) or
+                ((header[6].toInt() and 0xff) shl 8) or
+                (header[7].toInt() and 0xff)
 
-        DataInputStream(ByteArrayInputStream(frame)).use { d ->
-            val type = d.readInt()
-            val payloadSize = d.readInt()
-            if (payloadSize < 0 || payloadSize > frameSize - 8) {
-                throw java.io.IOException("Invalid payload size: $payloadSize (frame=$frameSize)")
-            }
-            val payload = ByteArray(payloadSize)
-            if (payloadSize > 0) {
-                readFully(d, payload)
-            }
-            return type to payload
+        val payloadSize = ((header[8].toInt() and 0xff) shl 24) or
+                ((header[9].toInt() and 0xff) shl 16) or
+                ((header[10].toInt() and 0xff) shl 8) or
+                (header[11].toInt() and 0xff)
+
+        if (payloadSize < 0 || payloadSize > frameSize - 8) {
+            throw java.io.IOException("Invalid payload size: $payloadSize (frame=$frameSize)")
         }
+
+        val payload = ByteArray(payloadSize)
+        if (payloadSize > 0) {
+            readFully(input, payload)
+        }
+        return type to payload
     }
 
     private fun readFully(input: InputStream, buf: ByteArray) {
@@ -128,7 +150,12 @@ data class VDRequest(
     /** JPEG 质量 1~100（默认 90，识别足够）。数值越大帧越大延迟越高。 */
     val jpegQuality: Int = 90,
     /** 帧率上限（默认 30fps；识别/点击场景 15fps 也够用，省带宽）。 */
-    val maxFps: Int = 30
+    val maxFps: Int = 30,
+    /**
+     * 帧格式：0=JPEG（兼容旧路径），1=RGBA 原始字节直传（CPU 优化，跳过 JPEG 编解码）。
+     * RGBA 直传下每帧字节 = width*height*4，1080P ≈ 8MB，需配套降低 maxFps 避免 pipe 带宽打满。
+     */
+    val frameFormat: Int = 0
 ) {
     fun toByteArray(): ByteArray {
         val p = Parcel.obtain()
@@ -140,6 +167,7 @@ data class VDRequest(
             p.writeString(name)
             p.writeInt(jpegQuality)
             p.writeInt(maxFps)
+            p.writeInt(frameFormat)
             p.setDataPosition(0)
             return p.marshall()
         } finally {
@@ -160,7 +188,9 @@ data class VDRequest(
                 val name = p.readString() ?: "AutoBOT-VirtualDisplay"
                 val jpegQuality = p.readInt().coerceIn(1, 100)
                 val maxFps = p.readInt().coerceIn(1, 60)
-                return VDRequest(width, height, density, flags, name, jpegQuality, maxFps)
+                // 兼容旧版 server 不写 frameFormat 字段的情况：dataAvail 检查后读取
+                val frameFormat = if (p.dataAvail() >= 4) p.readInt() else 0
+                return VDRequest(width, height, density, flags, name, jpegQuality, maxFps, frameFormat)
             } finally {
                 p.recycle()
             }
@@ -232,13 +262,31 @@ data class FramePacket(
         }
     }
 
-    /** 解 JPEG 为 Bitmap（纯 Java 标准 API，无 native 依赖）。 */
+    /**
+     * 解 JPEG 为 Bitmap（纯 Java 标准 API，无 native 依赖）。
+     *
+     * CPU 优化：优先使用 [BitmapPool] 复用 native 像素内存，避免每帧重新分配 ~8MB 堆外内存。
+     * 池子提供 inBitmap 时第一次解码可能因尺寸差异抛 IllegalArgumentException，
+     * 此时清空 inBitmap 重试一次（fallback 到普通解码）。
+     */
     fun decodeBitmap(): Bitmap? {
-        return try {
-            BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+        val opts = BitmapFactory.Options()
+        BitmapPool.applyToOptions(opts)
+        try {
+            val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
+            if (bmp != null) return bmp
+        } catch (e: IllegalArgumentException) {
+            // inBitmap 尺寸不匹配：清空 inBitmap 重试一次
+            Log.w("VDProtocol", "decodeBitmap inBitmap mismatch, fallback: ${e.message}")
+            opts.inBitmap = null
         } catch (e: Exception) {
-            // 注意：FramePacket 是顶层 data class，无法访问 VDProtocol companion 的 private TAG
             Log.e("VDProtocol", "FramePacket.decodeBitmap failed: ${e.message}")
+            return null
+        }
+        return try {
+            BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
+        } catch (e: Exception) {
+            Log.e("VDProtocol", "FramePacket.decodeBitmap fallback failed: ${e.message}")
             null
         }
     }

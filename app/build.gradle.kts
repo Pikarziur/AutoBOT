@@ -65,7 +65,10 @@ android {
             }
         }
         release {
-            isMinifyEnabled = false
+            // CPU/存储优化：开启 R8 代码压缩 + 资源压缩
+            // proguard-rules.pro 已 keep 所有反射类（Shizuku/Server/Native/Workarounds），不会破坏运行时
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

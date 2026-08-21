@@ -13,6 +13,7 @@ import com.autobot.app.server.VDRequest
 import com.autobot.app.server.VDResponse
 import com.autobot.app.third.DisplayManagerHelper
 import com.autobot.app.ui.settings.VdResolutionMode
+import com.autobot.app.util.BitmapPool
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -58,8 +59,17 @@ class CompositionService(private val context: Context) {
         private const val CREATE_VD_RESP_TIMEOUT_MS = 15_000L
         /** JPEG 压缩质量：90 足够清晰识别；100 帧变大延迟高 */
         private const val JPEG_QUALITY = 90
-        /** 30fps 是 VD 默认刷新率，识别/点击场景 15fps 也够用 */
-        private const val MAX_FPS = 30
+        /**
+         * 帧率上限：CPU 优化降为 15fps（识别/点击场景足够，省 50% 帧处理 CPU）。
+         * 30fps 时每秒 30 次 JPEG 编解码 + Bitmap 分配，识别场景实际只 2fps 消费，浪费严重。
+         */
+        private const val MAX_FPS = 15
+        /**
+         * 帧格式：1=RGBA 直传（CPU 优化，跳过 JPEG 编解码），0=JPEG 兼容。
+         * RGBA 直传下 pipe 带宽约 60MB/s（1080P 15fps），现代 Android 设备 stdin/stdout pipe 可承载。
+         * 若低端设备 pipe 阻塞严重，可改回 0 走 JPEG。
+         */
+        private const val FRAME_FORMAT = 1
     }
 
     private var capturer: NativeCapturer? = null
@@ -83,6 +93,10 @@ class CompositionService(private val context: Context) {
 
     @Volatile
     private var cachedDisplayId: Int = -1
+
+    /** 当前 VD 帧格式：1=RGBA 直传，0=JPEG；runFrameReceiver 据此路由解码路径 */
+    @Volatile
+    private var frameFormat: Int = FRAME_FORMAT
 
     private var currentMode: VdResolutionMode = resolveMode(context)
 
@@ -207,7 +221,8 @@ class CompositionService(private val context: Context) {
                 flags = flags,
                 name = VIRTUAL_DISPLAY_NAME,
                 jpegQuality = JPEG_QUALITY,
-                maxFps = MAX_FPS
+                maxFps = MAX_FPS,
+                frameFormat = FRAME_FORMAT
             )
             try {
                 VDProtocol.writeMessage(serverProcess!!.outputStream,
@@ -237,6 +252,8 @@ class CompositionService(private val context: Context) {
                 return null to msg
             }
             cachedDisplayId = resp.displayId
+            // 记录请求的 frameFormat，runFrameReceiver 据此路由
+            frameFormat = request.frameFormat
 
             keepAliveRunning.set(true)
             keepAliveThread = Thread({ runKeepAlive(serverProcess!!) }, "autobot-keepalive").apply {
@@ -358,6 +375,8 @@ class CompositionService(private val context: Context) {
         try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
         capturer = null
         cachedDisplayId = -1
+        // VD 停止时清空 Bitmap 池，释放 native 像素内存
+        BitmapPool.clear()
         Log.i(TAG, "VirtualDisplay stopped")
     }
 
@@ -375,8 +394,21 @@ class CompositionService(private val context: Context) {
                 VDProtocol.MSG_FRAME -> {
                     try {
                         val pkt = FramePacket.fromByteArray(payload)
-                        val bitmap = pkt.decodeBitmap() ?: continue
-                        capturer?.injectExternalFrame(bitmap)
+                        if (frameFormat == 1) {
+                            // CPU 优化路径：RGBA 直传，跳过 JPEG 解码 + Bitmap 分配
+                            // pkt.jpegBytes 在 RGBA 模式下实为 RGBA 原始字节
+                            capturer?.injectExternalFrameRaw(pkt.jpegBytes, pkt.width, pkt.height)
+                        } else {
+                            // JPEG 兼容路径：解码 + 归池
+                            val decoded = pkt.decodeBitmap()
+                            if (decoded != null) {
+                                try {
+                                    capturer?.injectExternalFrame(decoded)
+                                } finally {
+                                    BitmapPool.release(decoded)
+                                }
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "FramePacket decode failed: ${e.message}")
                     }
@@ -464,5 +496,7 @@ class CompositionService(private val context: Context) {
         try { capturer?.releaseNativeCapturer() } catch (_: Exception) {}
         capturer = null
         cachedDisplayId = -1
+        // VD 异常停止时同样清空 Bitmap 池
+        BitmapPool.clear()
     }
 }

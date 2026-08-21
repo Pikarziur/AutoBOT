@@ -21,6 +21,9 @@ import kotlin.coroutines.suspendCoroutine
  * - [recognizeText]：ML Kit OCR，读屏幕文字（不需模板，能读动态数值）
  *
  * 使用前必须先调用 [AutoBOTApp.onCreate] 中的 OpenCVLoader.initLocal()
+ *
+ * CPU 优化：[findTemplate] 内部缓存 screenMat 和 templateMat，frameCount 未变时跳过
+ * bitmapToMat（OpenCV 像素拷贝，1080P 单次 ~5-10ms）。注意调用方需传 frameCount。
  */
 object RecognitionManager {
 
@@ -31,25 +34,60 @@ object RecognitionManager {
         TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
     }
 
+    // ==================== OpenCV Mat 缓存（CPU 优化）====================
+    /** screenMat 缓存：frameCount 未变时复用，避免重复 bitmapToMat */
+    private val cachedScreenMat = Mat()
+    @Volatile private var cachedScreenFrameCount: Long = -1
+    @Volatile private var cachedScreenW: Int = 0
+    @Volatile private var cachedScreenH: Int = 0
+    private val screenCacheLock = Any()
+
+    /** templateMat 缓存：同一 template bitmap 引用复用 */
+    private val cachedTemplateMat = Mat()
+    @Volatile private var cachedTemplateRef: Bitmap? = null
+    private val templateCacheLock = Any()
+
     /**
      * OpenCV 模板匹配：在截图中查找模板图的位置
      *
      * @param screen   VD 截图
      * @param template 要查找的按钮/图标模板图
      * @param threshold 匹配阈值（0~1，越高越严格，默认 0.8）
+     * @param frameCount VD 帧计数（用于缓存命中判断，<0 表示禁用缓存）
      * @return 匹配到的中心坐标，未找到返回 null
      */
     fun findTemplate(
         screen: Bitmap,
         template: Bitmap,
-        threshold: Double = 0.8
+        threshold: Double = 0.8,
+        frameCount: Long = -1
     ): android.graphics.Point? {
-        val screenMat = Mat()
-        val templateMat = Mat()
         val resultMat = Mat()
         try {
-            Utils.bitmapToMat(screen, screenMat)
-            Utils.bitmapToMat(template, templateMat)
+            // screenMat 缓存：frameCount 相同且尺寸匹配则复用，否则重新 bitmapToMat
+            val screenMat = synchronized(screenCacheLock) {
+                val cacheHit = frameCount >= 0 &&
+                        frameCount == cachedScreenFrameCount &&
+                        cachedScreenW == screen.width &&
+                        cachedScreenH == screen.height &&
+                        !cachedScreenMat.empty()
+                if (!cacheHit) {
+                    Utils.bitmapToMat(screen, cachedScreenMat)
+                    cachedScreenFrameCount = frameCount
+                    cachedScreenW = screen.width
+                    cachedScreenH = screen.height
+                }
+                cachedScreenMat  // 注意：返回的是缓存实例，matchTemplate 内部只读不写
+            }
+
+            // templateMat 缓存：同一 template 引用复用
+            val templateMat = synchronized(templateCacheLock) {
+                if (cachedTemplateRef !== template || cachedTemplateMat.empty()) {
+                    Utils.bitmapToMat(template, cachedTemplateMat)
+                    cachedTemplateRef = template
+                }
+                cachedTemplateMat
+            }
 
             Imgproc.matchTemplate(
                 screenMat,
@@ -72,8 +110,7 @@ object RecognitionManager {
             Log.e(TAG, "findTemplate error", e)
             return null
         } finally {
-            screenMat.release()
-            templateMat.release()
+            // 只 release resultMat；screenMat 和 templateMat 是缓存实例，跨调用复用
             resultMat.release()
         }
     }

@@ -30,5 +30,27 @@
 # ShizukuProcessManager: 反射 Shizuku.newProcess 启动 server
 -keep class com.autobot.app.manager.ShizukuProcessManager { *; }
 
+# ==================== 三方库（R8 默认会剥离未使用类，但反射入口需显式 keep）====================
+
+# OpenCV：Utils.bitmapToMat 内部通过 JNI 反射访问 Bitmap 像素，保留 org.opencv.** 入口
+-keep class org.opencv.** { *; }
+-dontwarn org.opencv.**
+
+# ML Kit Text Recognition：模型加载与识别走反射，保留 com.google.mlkit.** / com.google.android.gms.vision.**
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.vision.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_text.** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.vision.**
+
+# kotlinx.coroutines：R8 已带 consumer rules，但 ensureNotNull/Continuation 入口保险性保留
+-dontwarn kotlinx.coroutines.**
+
+# ==================== 数据类（Parcel 序列化 + JSON 解析）====================
+# TaskFile / ProgramTask / TaskAction / RecognitionTask 等模型走 JSON 反射（Gson/Moshi 风格），
+# 字段名需保留，否则反序列化字段为 null
+-keep class com.autobot.app.model.** { *; }
+-keepclassmembers class com.autobot.app.model.** { *; }
+
 # Compose 自动带 consumer rules，无需额外配置
 

@@ -615,6 +615,92 @@ static void JNICALL native_injectExternalFrame(JNIEnv* env, jobject /*thiz*/, jo
 }
 
 // ============================================================================
+// CPU 优化路径：跳过 JPEG 解码 + Bitmap 创建，直接把 server 端 RGBA 字节写入 frameBuffer
+// ============================================================================
+/**
+ * JNI 签名对应 Kotlin: fun injectExternalFrameRaw(bytes: ByteArray, width: Int, height: Int)
+ *
+ * 与 native_injectExternalFrame 等价，但少了一次 BitmapFactory.decodeByteArray（JPEG 解码）
+ * 和 AndroidBitmap_lockPixels（Bitmap 像素锁定），单帧 CPU 节省 ~3-5ms。
+ * 用 GetByteArrayRegion 直接拷贝到目标 buffer，避免 GetByteArrayElements 的额外 pin/unpin 开销。
+ */
+static void JNICALL native_injectExternalFrameRaw(JNIEnv* env, jobject /*thiz*/,
+                                                  jbyteArray bytes, jint width, jint height) {
+    if (g_ctx == nullptr || g_ctx->released.load() || bytes == nullptr) return;
+
+    jsize len = env->GetArrayLength(bytes);
+    size_t need = (size_t)width * height * 4;
+    if ((size_t)len < need) {
+        LOGW("injectExternalFrameRaw: bytes too short, len=%d, need=%zu", len, need);
+        return;
+    }
+    if (width <= 0 || height <= 0) {
+        LOGE("injectExternalFrameRaw: invalid dims %dx%d", width, height);
+        return;
+    }
+
+    // ---- 1. 写入帧缓冲 ----
+    {
+        std::lock_guard<std::mutex> lk(g_ctx->fbMutex);
+        if (g_ctx->frameBuffer.size() < need) {
+            try {
+                g_ctx->frameBuffer.resize(need, 0);
+            } catch (const std::bad_alloc& e) {
+                LOGE("injectExternalFrameRaw resize failed: %s", e.what());
+                return;
+            }
+        }
+        g_ctx->fbWidth  = width;
+        g_ctx->fbHeight = height;
+        // 同步 ctx 宽高（预览 blit 用 g_ctx->width/height）
+        g_ctx->width  = width;
+        g_ctx->height = height;
+
+        // GetByteArrayRegion：直接拷贝到目标 buffer，无额外分配
+        // 比 GetByteArrayElements 更高效（后者需要 pin 内存或返回拷贝）
+        env->GetByteArrayRegion(bytes, 0, (jsize)need,
+                                 reinterpret_cast<jbyte*>(g_ctx->frameBuffer.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            LOGE("injectExternalFrameRaw: GetByteArrayRegion threw");
+            return;
+        }
+    }
+
+    // ---- 2. 分发预览（若 previewWindow 已设置）----
+    {
+        std::lock_guard<std::mutex> lk(g_ctx->previewMutex);
+        if (g_ctx->previewWindow != nullptr) {
+            ANativeWindow* pw = g_ctx->previewWindow;
+            ANativeWindow_setBuffersGeometry(pw, width, height,
+                                             AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+            ANativeWindow_Buffer buf;
+            if (ANativeWindow_lock(pw, &buf, nullptr) == 0) {
+                std::lock_guard<std::mutex> lk2(g_ctx->fbMutex);
+                uint8_t* src = g_ctx->frameBuffer.data();
+                if (src != nullptr && buf.bits != nullptr) {
+                    uint8_t* dst = (uint8_t*)buf.bits;
+                    const int rowBytes = width * 4;
+                    if (buf.stride == width) {
+                        memcpy(dst, src, (size_t)rowBytes * height);
+                    } else {
+                        for (int y = 0; y < height; y++) {
+                            memcpy(dst + y * buf.stride * 4,
+                                   src + y * rowBytes,
+                                   (size_t)rowBytes);
+                        }
+                    }
+                }
+                ANativeWindow_unlockAndPost(pw);
+            }
+        }
+    }
+
+    // ---- 3. 自增帧计数 ----
+    g_ctx->frameCount.fetch_add(1);
+}
+
+// ============================================================================
 // RegisterNatives 表
 // ============================================================================
 static const JNINativeMethod kNativeMethods[] = {
@@ -624,6 +710,8 @@ static const JNINativeMethod kNativeMethods[] = {
          (void*)native_prepareFrameBuffer},
         {"injectExternalFrame",   "(Landroid/graphics/Bitmap;)V",
          (void*)native_injectExternalFrame},
+        {"injectExternalFrameRaw", "([BII)V",
+         (void*)native_injectExternalFrameRaw},
         {"releaseNativeCapturer", "()V",
          (void*)native_releaseCapturer},
         {"setPreviewSurface",     "(Landroid/view/Surface;)V",

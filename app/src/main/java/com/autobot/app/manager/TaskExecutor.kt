@@ -10,6 +10,7 @@ import com.autobot.app.model.TaskActionType
 import com.autobot.app.model.TaskFile
 import com.autobot.app.recognition.RecognitionManager
 import com.autobot.app.service.CompositionService
+import com.autobot.app.util.BitmapPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -405,29 +406,34 @@ object TaskExecutor {
                 continue
             }
 
-            onLog("[${attempts.toString().padStart(3, '0')}] 📸 抓图成功 ${bitmap.width}×${bitmap.height}")
+            try {
+                onLog("[${attempts.toString().padStart(3, '0')}] 📸 抓图成功 ${bitmap.width}×${bitmap.height}")
 
-            when (task.mode) {
-                RecognitionTaskMode.OCR, RecognitionTaskMode.BOTH -> {
-                    val results = RecognitionManager.recognizeText(bitmap)
-                    val match = results.find { it.text.contains(targetText) }
-                    if (match != null) {
-                        onLog("  └─ ✅ 已找到[$targetText]，并且已经完成点击")
-                        onLog("     └─ 坐标：(${match.x}, ${match.y})")
-                        onLog("     └─ 原文：${match.text}")
-                        cs.injectTouchDown(match.x, match.y)
-                        delay(50)
-                        cs.injectTouchUp(match.x, match.y)
-                        onLog("  └─ ✓ 点击完成，等待 ${task.delayAfterSuccessMs}ms 缓冲")
-                        delay(task.delayAfterSuccessMs)
-                        return
-                    } else {
-                        onLog("  └─ ❌ 找不到目标文字[$targetText]（识别到 ${results.size} 个文字块）")
+                when (task.mode) {
+                    RecognitionTaskMode.OCR, RecognitionTaskMode.BOTH -> {
+                        val results = RecognitionManager.recognizeText(bitmap)
+                        val match = results.find { it.text.contains(targetText) }
+                        if (match != null) {
+                            onLog("  └─ ✅ 已找到[$targetText]，并且已经完成点击")
+                            onLog("     └─ 坐标：(${match.x}, ${match.y})")
+                            onLog("     └─ 原文：${match.text}")
+                            cs.injectTouchDown(match.x, match.y)
+                            delay(50)
+                            cs.injectTouchUp(match.x, match.y)
+                            onLog("  └─ ✓ 点击完成，等待 ${task.delayAfterSuccessMs}ms 缓冲")
+                            delay(task.delayAfterSuccessMs)
+                            return
+                        } else {
+                            onLog("  └─ ❌ 找不到目标文字[$targetText]（识别到 ${results.size} 个文字块）")
+                        }
+                    }
+                    RecognitionTaskMode.TEMPLATE -> {
+                        onLog("  └─ ⚠️  TEMPLATE 模式暂未实现模板加载，跳过")
                     }
                 }
-                RecognitionTaskMode.TEMPLATE -> {
-                    onLog("  └─ ⚠️  TEMPLATE 模式暂未实现模板加载，跳过")
-                }
+            } finally {
+                // CPU 优化：归池复用，避免每帧重新分配 8MB 堆外像素内存
+                BitmapPool.release(bitmap)
             }
 
             delay(task.intervalMs)

@@ -3,6 +3,7 @@ package com.autobot.app.recognition
 import android.graphics.Bitmap
 import android.util.Log
 import com.autobot.app.service.CompositionService
+import com.autobot.app.util.BitmapPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,79 +100,97 @@ object RecognitionExecutor {
                         continue
                     }
 
-                    onLog("[${attempts.toString().padStart(3, '0')}] 📸 抓图成功 ${bitmap.width}×${bitmap.height}")
+                    try {
+                        onLog("[${attempts.toString().padStart(3, '0')}] 📸 抓图成功 ${bitmap.width}×${bitmap.height}")
 
-                    // 2. 识别
-                    val clickPoint = when (mode) {
-                        RecognitionMode.TEMPLATE -> {
-                            if (template == null) {
-                                onLog("  └─ ❌ 模板为空，无法识别")
-                                null
-                            } else {
-                                val pt = RecognitionManager.findTemplate(bitmap, template, threshold)
-                                if (pt != null) {
-                                    onLog("  └─ ✅ 模板匹配成功 → ($pt.x, $pt.y)")
+                        // 取当前帧计数，用于 findTemplate 内部 Mat 缓存命中判断
+                        val frameCount = compositionService.getFrameCount()
+
+                        // 2. 识别
+                        val clickPoint = when (mode) {
+                            RecognitionMode.TEMPLATE -> {
+                                if (template == null) {
+                                    onLog("  └─ ❌ 模板为空，无法识别")
+                                    null
                                 } else {
-                                    onLog("  └─ ❌ 模板未匹配")
+                                    // 传 frameCount 启用 Mat 缓存：同一帧多次匹配时跳过 bitmapToMat
+                                    val pt = RecognitionManager.findTemplate(bitmap, template, threshold, frameCount)
+                                    if (pt != null) {
+                                        onLog("  └─ ✅ 模板匹配成功 → ($pt.x, $pt.y)")
+                                    } else {
+                                        onLog("  └─ ❌ 模板未匹配")
+                                    }
+                                    pt
+                                }
+                            }
+
+                            RecognitionMode.OCR -> {
+                                if (targetText.isNullOrBlank()) {
+                                    onLog("  └─ ❌ 目标文字为空，无法识别")
+                                    null
+                                } else {
+                                    val results = RecognitionManager.recognizeText(bitmap)
+                                    val match = results.find { it.text.contains(targetText) }
+                                    if (match != null) {
+                                        val pt = android.graphics.Point(match.x, match.y)
+                                        onLog("  └─ ✅ OCR 匹配「$targetText」→ ($pt.x, $pt.y)")
+                                        onLog("     └─ 原文：${match.text}")
+                                        pt
+                                    } else {
+                                        onLog("  └─ ❌ OCR 未找到「$targetText」(识别到 ${results.size} 个文字块)")
+                                        null
+                                    }
+                                }
+                            }
+
+                            RecognitionMode.BOTH -> {
+                                // 先模板匹配，失败再 OCR 兜底
+                                var pt: android.graphics.Point? = null
+                                if (template != null) {
+                                    // 传 frameCount 启用 Mat 缓存（同帧第二次匹配直接复用）
+                                    pt = RecognitionManager.findTemplate(bitmap, template, threshold, frameCount)
+                                    if (pt != null) {
+                                        onLog("  └─ ✅ 模板匹配成功 → ($pt.x, $pt.y)")
+                                    }
+                                }
+                                if (pt == null && !targetText.isNullOrBlank()) {
+                                    val results = RecognitionManager.recognizeText(bitmap)
+                                    val match = results.find { it.text.contains(targetText) }
+                                    if (match != null) {
+                                        pt = android.graphics.Point(match.x, match.y)
+                                        onLog("  └─ ✅ OCR 兜底匹配「$targetText」→ ($pt.x, $pt.y)")
+                                    } else {
+                                        onLog("  └─ ❌ 模板+OCR 均未匹配")
+                                    }
                                 }
                                 pt
                             }
                         }
 
-                        RecognitionMode.OCR -> {
-                            if (targetText.isNullOrBlank()) {
-                                onLog("  └─ ❌ 目标文字为空，无法识别")
-                                null
-                            } else {
-                                val results = RecognitionManager.recognizeText(bitmap)
-                                val match = results.find { it.text.contains(targetText) }
-                                if (match != null) {
-                                    val pt = android.graphics.Point(match.x, match.y)
-                                    onLog("  └─ ✅ OCR 匹配「$targetText」→ ($pt.x, $pt.y)")
-                                    onLog("     └─ 原文：${match.text}")
-                                    pt
-                                } else {
-                                    onLog("  └─ ❌ OCR 未找到「$targetText」(识别到 ${results.size} 个文字块)")
-                                    null
-                                }
-                            }
+                        // 3. 识别成功 → 点击中心点
+                        if (clickPoint != null) {
+                            onLog("  └─ 👆 点击 ($clickPoint.x, $clickPoint.y)")
+                            compositionService.injectTouchDown(clickPoint.x, clickPoint.y)
+                            delay(50)
+                            compositionService.injectTouchUp(clickPoint.x, clickPoint.y)
+                            onLog("  └─ ✓ 点击完成")
+                            break
                         }
-
-                        RecognitionMode.BOTH -> {
-                            // 先模板匹配，失败再 OCR 兜底
-                            var pt: android.graphics.Point? = null
-                            if (template != null) {
-                                pt = RecognitionManager.findTemplate(bitmap, template, threshold)
-                                if (pt != null) {
-                                    onLog("  └─ ✅ 模板匹配成功 → ($pt.x, $pt.y)")
-                                }
-                            }
-                            if (pt == null && !targetText.isNullOrBlank()) {
-                                val results = RecognitionManager.recognizeText(bitmap)
-                                val match = results.find { it.text.contains(targetText) }
-                                if (match != null) {
-                                    pt = android.graphics.Point(match.x, match.y)
-                                    onLog("  └─ ✅ OCR 兜底匹配「$targetText」→ ($pt.x, $pt.y)")
-                                } else {
-                                    onLog("  └─ ❌ 模板+OCR 均未匹配")
-                                }
-                            }
-                            pt
-                        }
+                    } finally {
+                        // CPU 优化：归池复用，避免每帧重新分配 8MB 堆外像素内存
+                        BitmapPool.release(bitmap)
                     }
 
-                    // 3. 识别成功 → 点击中心点
-                    if (clickPoint != null) {
-                        onLog("  └─ 👆 点击 ($clickPoint.x, $clickPoint.y)")
-                        compositionService.injectTouchDown(clickPoint.x, clickPoint.y)
-                        delay(50)
-                        compositionService.injectTouchUp(clickPoint.x, clickPoint.y)
-                        onLog("  └─ ✓ 点击完成")
-                        break
+                    // 4. 未识别到，等待下一轮（自适应退避：长时未找到目标则拉长间隔，省 CPU）
+                    //    attempts 1-10: 500ms（保持响应速度）
+                    //    attempts 11-20: 1000ms（适度退避）
+                    //    attempts 21+: 2000ms（深度退避，等待 UI 缓慢变化）
+                    val adaptiveDelayMs = when {
+                        attempts <= 10 -> CAPTURE_INTERVAL_MS
+                        attempts <= 20 -> CAPTURE_INTERVAL_MS * 2
+                        else -> (CAPTURE_INTERVAL_MS * 4).coerceAtMost(2000L)
                     }
-
-                    // 4. 未识别到，等待下一轮
-                    delay(CAPTURE_INTERVAL_MS)
+                    delay(adaptiveDelayMs)
                 }
 
                 // 任务结束日志
