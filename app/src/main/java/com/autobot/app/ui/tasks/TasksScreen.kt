@@ -590,15 +590,15 @@ private fun FullscreenMonitor(
                         // ★以按钮自身右上角为锚点（TopEnd 让按钮右上角对齐 VD 右上角），
                         // 适当增大 padding 让按钮往左下偏移，避免紧贴屏幕圆角/边缘导致显示不全
                         .align(Alignment.TopEnd)
-                        .padding(top = 12.dp, end = 12.dp)
-                        .size(22.dp)
+                        .padding(top = 14.dp, end = 14.dp)
+                        .size(18.dp)
                         .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Close,
                         contentDescription = "退出全屏",
                         tint = Color.White,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
