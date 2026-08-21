@@ -426,21 +426,11 @@ private fun VirtualDisplayPreview(
                     )
                 }
 
-                // ★状态标签以"目标应用是否映射运行中"为准，而非 VD 是否运行
-                // 停止映射后即使 VD 仍在运行，也显示"未映射"，避免误以为应用还在运行
-                val (dotColor, label) = when {
-                    isAppMapped && isSurfaceAvailable -> {
-                        Color(0xFF4CAF50) to "运行中"
-                    }
-                    isAppMapped -> {
-                        Color(0xFFFF9800) to "等待 Surface"
-                    }
-                    isRunning -> {
-                        Color(0xFFFF9800) to "未映射应用"
-                    }
-                    else -> {
-                        Color(0xFF9E9E9E) to "未启动"
-                    }
+                // ★状态标签只保留两态：运行中 / 未启动
+                val (dotColor, label) = if (isAppMapped && isSurfaceAvailable) {
+                    Color(0xFF4CAF50) to "运行中"
+                } else {
+                    Color(0xFF9E9E9E) to "未启动"
                 }
                 Row(
                     modifier = Modifier
