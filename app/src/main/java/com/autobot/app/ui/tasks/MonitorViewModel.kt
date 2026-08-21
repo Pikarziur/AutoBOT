@@ -331,6 +331,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             showSnack("当前没有映射到 VD 的目标应用")
             return
         }
+        // ★目标应用停止时同步停止正在执行的任务：执行按钮立即恢复为「执行任务」
+        //   _isExecuting=false 让按钮即时变回；TaskExecutor.stop 的 cancelAndJoin 异步执行，
+        //   listener.onTaskStopped 也会置 false（幂等），即时重置避免按钮卡在「停止」。
+        if (_isExecuting.value || TaskExecutor.isExecuting() || RecognitionExecutor.isExecuting()) {
+            TaskExecutor.stop()
+            RecognitionExecutor.stop()
+            val cnt = TaskManager.stopAllTasks()
+            _isExecuting.value = false
+            appendLauncherLog("[${stamp()}] ⏹ 目标应用停止，同步结束 $cnt 个任务（执行按钮已恢复）")
+        }
         // ★先重置全部状态：UI 立即响应
         //   _vdTargetPackage=null → 按钮变回"启动"，预览区显示"未启动"
         //   _isRunning=false → 预览区不再可点击进入全屏，状态标签变灰

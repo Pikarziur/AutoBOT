@@ -164,6 +164,8 @@ object AppManager {
      * 策略：
      *   1. 优先通过 Shizuku 调用 `am start`（可跨进程/后台启动，稳定性更高）
      *      - 若 displayId > 0：附加 `--display <displayId>` 让 App 启动到指定虚拟显示器
+     *      - 隐身：始终附加 `-f 0x10800000`（NEW_TASK | EXCLUDE_FROM_RECENTS），
+     *        对齐 MAA-Meow startApp，使目标应用不进入手机本体「最近任务」
      *   2. 若 Shizuku 不可用则回退为普通 Context.startActivity（受后台启动限制，且无法指定 displayId）
      *
      * @param context     回退到 startActivity 时使用；可传 null（当确认 Shizuku 可用时）
@@ -179,7 +181,9 @@ object AppManager {
 
         if (com.autobot.app.manager.ShizukuManager.isShizukuGranted()) {
             val displayArg = if (displayId > 0) " --display $displayId" else ""
-            val launchActivityCmd = "am start$displayArg -n $packageName/" +
+            // ★隐身：FLAG_ACTIVITY_NEW_TASK(0x10000000) | FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS(0x00800000)
+            val flagsArg = " -f 0x10800000"
+            val launchActivityCmd = "am start$displayArg$flagsArg -n $packageName/" +
                     (resolveLauncherActivity(context, packageName) ?: "")
             val r1 = ShellExecutor.execute(
                 launchActivityCmd, useShizuku = true, timeout = 3000
@@ -208,7 +212,8 @@ object AppManager {
         val pm = ctx.packageManager
         val launchIntent = pm.getLaunchIntentForPackage(packageName)
         return if (launchIntent != null) {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // ★隐身：同样附加 EXCLUDE_FROM_RECENTS，与 am start 主路径行为一致
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
             try {
                 ctx.startActivity(launchIntent)
                 Log.i(TAG, "launchApp (startActivity) success: $packageName (default display)")
