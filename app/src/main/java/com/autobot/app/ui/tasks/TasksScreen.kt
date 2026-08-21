@@ -599,7 +599,7 @@ private fun FullscreenMonitor(
                         imageVector = Icons.Filled.Close,
                         contentDescription = "退出全屏",
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
