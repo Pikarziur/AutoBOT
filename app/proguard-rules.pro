@@ -54,3 +54,36 @@
 
 # Compose 自动带 consumer rules，无需额外配置
 
+# ==================== 存储优化：R8 深度压缩 ====================
+
+# 允许 R8 修改访问修饰符（public→package-private），提升 tree-shaking 命中率
+-allowaccessmodification
+
+# 将所有非 keep 类合并到最小包名，减少字符串表（class names）体积
+-repackageclasses
+
+# 合并未被直接引用的接口，减少 dex 中的 class 数量
+-mergeinterfacesaggressively
+
+# 移除 Kotlin 元数据中仅用于编译期的信息（不影响运行时反射）
+-assumenosideeffects class kotlin.Metadata { *; }
+
+# Release 构建中移除 android.util.Log.d/v/i 调用（保留 w/e 以防线上崩溃诊断）
+-assumenosideeffects class android.util.Log {
+    public static int v(java.lang.String, java.lang.String);
+    public static int v(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int d(java.lang.String, java.lang.String);
+    public static int d(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int i(java.lang.String, java.lang.String);
+    public static int i(java.lang.String, java.lang.String, java.lang.Throwable);
+}
+
+# Compose：移除未使用 @Composable 函数的 metadata 注解开销
+# R8 默认已处理 Compose 的 consumer rules，此处仅补充 runtime 保险 keep
+-keep class androidx.compose.runtime.** { *; }
+-dontwarn androidx.compose.runtime.**
+
+# Kotlin 标准库：裁剪未使用的扩展函数
+-dontwarn kotlin.collections.**
+-dontwarn kotlin.sequences.**
+

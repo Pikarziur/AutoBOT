@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -114,7 +114,7 @@ class MainActivity : AppCompatActivity() {
 }
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
-    TASKS("后台任务", Icons.Outlined.PlayCircle),
+    TASKS("后台任务", Icons.Filled.PlayArrow),
     SETTINGS("设置", Icons.Outlined.Settings)
 }
 

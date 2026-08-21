@@ -86,7 +86,6 @@ android {
         jvmTarget = "1.8"
     }
     buildFeatures {
-        viewBinding = true
         // 启用 Jetpack Compose
         compose = true
     }
@@ -101,10 +100,26 @@ android {
             version = "3.22.1"
         }
     }
-    // 避免 C++ shared lib 重复打包
+    // 避免 C++ shared lib 重复打包 + 存储优化：剥离 META-INF 冗余文件
     packagingOptions {
         jniLibs {
             useLegacyPackaging = false
+        }
+        resources {
+            // 排除依赖 JAR 中的 license / notice / kotlin metadata 等冗余文件
+            excludes += setOf(
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/DEPENDENCIES",
+                "META-INF/*.kotlin_module",
+                "META-INF/proguard/**",
+                "kotlin/*.kotlin_builtins",
+                "META-INF/*.version"
+            )
         }
     }
     // APK 输出文件名：AutoBOT-debug.apk / AutoBOT-release.apk
@@ -122,19 +137,12 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.activity:activity-ktx:1.8.2")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
-
-    // 底部导航（实际上并未使用 NavHost，仅做依赖保留，后续可接入）
-    implementation("androidx.navigation:navigation-fragment-ktx:2.7.6")
-    implementation("androidx.navigation:navigation-ui-ktx:2.7.6")
 
     // 生命周期
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // Shizuku 权限库
@@ -151,15 +159,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.runtime:runtime")
-    // Material Icons Extended：提供 RadioButtonChecked/Unchecked、Image、Add、Delete 等图标
-    // core 包不含这些图标，CI 编译会报 unresolved reference
-    implementation("androidx.compose.material:material-icons-extended")
+    // Material Icons Extended 已移除：用 core 包图标 + 2 个自建 vector drawable 替代
     // Compose 与 Fragment/Activity 集成
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
-    // Compose 中复用 AndroidView 包裹 SurfaceView
-    implementation("androidx.compose.ui:ui-viewbinding")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // OpenCV4Android：模板匹配、图像处理（4.9.0 起官方发布到 Maven Central，无需 NDK）

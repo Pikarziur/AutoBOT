@@ -1,5 +1,6 @@
 package com.autobot.app.ui.tasks
 
+import com.autobot.app.R
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -41,9 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.graphics.Color
@@ -84,6 +83,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1114,7 +1114,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Filled.ContentCopy,
+                    painter = painterResource(R.drawable.ic_content_copy),
                     contentDescription = null,
                     modifier = Modifier.size(16.dp)
                 )
@@ -1128,7 +1128,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Filled.FileDownload,
+                    painter = painterResource(R.drawable.ic_file_download),
                     contentDescription = null,
                     modifier = Modifier.size(16.dp)
                 )
@@ -1161,7 +1161,7 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.ContentCopy,
+                        painter = painterResource(R.drawable.ic_content_copy),
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                         modifier = Modifier.size(32.dp)
