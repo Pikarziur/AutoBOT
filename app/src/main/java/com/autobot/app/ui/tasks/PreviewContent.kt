@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,12 +27,32 @@ fun PreviewContent(
     onSurfaceDestroyed: () -> Unit = {}
 ) {
     val displaySize by vm.displaySize.collectAsStateWithLifecycle()
+    // VD 停止后清空 Surface 最后一帧的信号（自增计数）
+    val clearPreviewTick by vm.clearPreviewTick.collectAsStateWithLifecycle()
 
     var lastSentSurface by remember { mutableStateOf<android.view.Surface?>(null) }
 
     var lastFixedSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
+    // 持有 SurfaceView 引用，供清屏信号触发时重绘空白底色
+    val surfaceViewRef = remember { mutableStateOf<SurfaceView?>(null) }
+
     val (bufferWidth, bufferHeight) = displaySize
+
+    // ★VD 停止后 SurfaceView 仍保留最后一帧画面，
+    //  监听 clearPreviewTick 递增时用 lockCanvas 重绘空白底色覆盖残留帧
+    LaunchedEffect(clearPreviewTick) {
+        if (clearPreviewTick <= 0) return@LaunchedEffect
+        val view = surfaceViewRef.value ?: return@LaunchedEffect
+        val holder = view.holder
+        val surface = holder.surface
+        if (!surface.isValid) return@LaunchedEffect
+        try {
+            val canvas: Canvas = holder.lockCanvas()
+            canvas.drawColor(0xFFE8E4DE.toInt())
+            holder.unlockCanvasAndPost(canvas)
+        } catch (_: Exception) { }
+    }
 
     Box(
         modifier = Modifier
@@ -42,6 +63,7 @@ fun PreviewContent(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 SurfaceView(ctx).apply {
+                    surfaceViewRef.value = this
                     holder.setFormat(PixelFormat.RGBA_8888)
 
                     holder.addCallback(object : SurfaceHolder.Callback {

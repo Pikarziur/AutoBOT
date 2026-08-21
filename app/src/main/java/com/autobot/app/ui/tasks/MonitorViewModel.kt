@@ -54,6 +54,13 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
+    /**
+     * 清空预览区 Surface 最后一帧的信号（自增计数）。
+     * VD 停止后 SurfaceView 仍保留最后一帧画面，递增该值可触发 PreviewContent 重绘空白底色。
+     */
+    private val _clearPreviewTick = MutableStateFlow(0)
+    val clearPreviewTick: StateFlow<Int> = _clearPreviewTick.asStateFlow()
+
     val displayId: Int get() = compositionService.displayId
 
     private val _frameCount = MutableStateFlow(0L)
@@ -335,6 +342,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             val appOk = AppManager.forceStopApp(pkg)
             compositionService.stopVirtualDisplay()
+            // ★VD 停止后 SurfaceView 仍保留最后一帧，递增 tick 通知 PreviewContent 清屏
+            _clearPreviewTick.value = _clearPreviewTick.value + 1
             if (appOk) {
                 appendLauncherLog("[${stamp()}] ✓ 已停止目标应用 pkg=$pkg 并关闭虚拟显示器")
             } else {
