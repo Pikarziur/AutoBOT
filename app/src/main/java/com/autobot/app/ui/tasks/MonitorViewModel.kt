@@ -306,6 +306,32 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         showSnack(if (cnt > 0) "已停止任务" else "当前没有运行中的任务")
     }
 
+    /**
+     * 停止映射到 VD 的目标应用（force-stop），并重置 VD 目标状态
+     *
+     * 用户在 AppLauncherRow 点击「停止」并经确认弹窗确认后调用。
+     * 仅关闭目标应用进程，不停止 VD 本身（VD 仍可继续运行/复用启动其他应用）。
+     * 无论 force-stop 是否成功都重置 _vdTargetPackage，避免按钮卡在"停止"状态。
+     */
+    fun stopTargetApp() {
+        val pkg = _vdTargetPackage.value
+        if (pkg.isNullOrBlank()) {
+            showSnack("当前没有映射到 VD 的目标应用")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = AppManager.forceStopApp(pkg)
+            if (ok) {
+                appendLauncherLog("[${stamp()}] ⏹ 已停止目标应用 pkg=$pkg（映射已解除）")
+            } else {
+                appendLauncherLog("[${stamp()}] ✗ 停止目标应用失败 pkg=$pkg，仍重置映射状态")
+            }
+            _vdTargetPackage.value = null
+            _vdTargetSize.value = null
+            showSnack(if (ok) "已停止 $pkg" else "停止失败，已重置映射状态")
+        }
+    }
+
     fun startRecognitionTask(
         mode: RecognitionMode,
         template: android.graphics.Bitmap? = null,

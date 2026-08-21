@@ -230,4 +230,33 @@ object AppManager {
         val cn = intent.component ?: return null
         return cn.className
     }
+
+    /**
+     * 强制停止指定包名的应用
+     *
+     * 通过 Shizuku 调用 `am force-stop` 关闭目标应用进程。
+     * 用于"停止映射"场景：用户主动关闭映射到 VD 的目标应用。
+     * 仅 Shizuku 可用时才能执行（普通应用无 force-stop 权限）。
+     *
+     * @param packageName 目标应用包名
+     * @return true 表示停止命令已成功执行
+     */
+    fun forceStopApp(packageName: String): Boolean {
+        if (packageName.isBlank()) {
+            Log.w(TAG, "forceStopApp: empty packageName")
+            return false
+        }
+        if (!ShizukuManager.isShizukuGranted()) {
+            Log.w(TAG, "forceStopApp: Shizuku not granted, cannot force-stop")
+            return false
+        }
+        val cmd = "am force-stop $packageName"
+        val r = ShellExecutor.execute(cmd, useShizuku = true, timeout = 3000)
+        if (r.isSuccess) {
+            Log.i(TAG, "forceStopApp success: $packageName")
+            return true
+        }
+        Log.w(TAG, "forceStopApp failed: ${r.stderr}")
+        return false
+    }
 }

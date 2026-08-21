@@ -43,7 +43,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -51,6 +53,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -120,6 +123,12 @@ fun TasksScreen(
 
     var taobaoIcon by remember { mutableStateOf<Drawable?>(null) }
     var launching by remember { mutableStateOf(false) }
+
+    // 目标应用是否已映射到 VD（成功启动后 vm.vdTargetPackage 不为 null）
+    val vdTargetPackage by vm.vdTargetPackage.collectAsStateWithLifecycle()
+    val isAppMapped = vdTargetPackage != null && !launching
+    // 停止目标应用的确认弹窗
+    var showStopConfirm by remember { mutableStateOf(false) }
 
     // executeMessage 已迁移到全局 Snackbar（MainActivity），此处仅消费掉避免堆积
     LaunchedEffect(executeMessage) {
@@ -194,11 +203,12 @@ fun TasksScreen(
                         .fillMaxWidth()
                         .weight(7f)
                 ) {
-                    TaobaoLauncherRow(
-                        taobaoIcon = taobaoIcon,
+                    AppLauncherRow(
+                        appIcon = taobaoIcon,
                         launching = launching,
+                        isMapped = isAppMapped,
                         onLaunchClick = {
-                            if (launching) return@TaobaoLauncherRow
+                            if (launching) return@AppLauncherRow
                             launching = true
                             scope.launch(Dispatchers.IO) {
                                 try {
@@ -224,8 +234,46 @@ fun TasksScreen(
                                     launching = false
                                 }
                             }
-                        }
+                        },
+                        onStopClick = { showStopConfirm = true }
                     )
+
+                    // 停止目标应用的确认弹窗
+                    if (showStopConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showStopConfirm = false },
+                            title = {
+                                Text(
+                                    text = "停止目标应用",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "确定要关闭已映射到虚拟显示器的应用吗？\n这将强制结束目标应用进程，映射关系将解除。",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        showStopConfirm = false
+                                        vm.stopTargetApp()
+                                    }
+                                ) {
+                                    Text(
+                                        text = "确定关闭",
+                                        color = Color(0xFFFF3B30)
+                                    )
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showStopConfirm = false }) {
+                                    Text("取消")
+                                }
+                            }
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(24.dp))
 
@@ -543,13 +591,15 @@ private fun FullscreenMonitor(
                     onClick = onExit,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(8.dp)
+                        .size(24.dp)
+                        .padding(0.dp)
                         .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Close,
                         contentDescription = "退出全屏",
-                        tint = Color.White
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
@@ -606,10 +656,12 @@ private fun android.content.Context.findActivity(): Activity? {
 
 /** */
 @Composable
-private fun TaobaoLauncherRow(
-    taobaoIcon: Drawable?,
+private fun AppLauncherRow(
+    appIcon: Drawable?,
     launching: Boolean,
-    onLaunchClick: () -> Unit
+    isMapped: Boolean,
+    onLaunchClick: () -> Unit,
+    onStopClick: () -> Unit
 ) {
     ListItem(
         modifier = Modifier
@@ -621,7 +673,7 @@ private fun TaobaoLauncherRow(
         ),
         leadingContent = {
             AppIconDrawable(
-                icon = taobaoIcon,
+                icon = appIcon,
                 modifier = Modifier.size(40.dp)
             )
         },
@@ -640,25 +692,38 @@ private fun TaobaoLauncherRow(
             )
         },
         trailingContent = {
+            // 启动/停止按钮切换：目标应用已映射到 VD 时显示红色停止按钮，否则显示启动按钮
             Button(
-                onClick = onLaunchClick,
-                enabled = !launching,
+                onClick = if (isMapped) onStopClick else onLaunchClick,
+                enabled = if (isMapped) true else !launching,
                 contentPadding = ButtonDefaults.ContentPadding,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
+                    // ★停止按钮红色（与 FloatingStopButton / 执行按钮的红色保持一致）
+                    containerColor = if (isMapped) Color(0xFFFF3B30)
+                                     else MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White
                 ),
                 modifier = Modifier.height(40.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (launching) "启动中" else "启动"
-                )
+                if (isMapped) {
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(text = "停止")
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (launching) "启动中" else "启动"
+                    )
+                }
             }
         }
     )
@@ -981,6 +1046,28 @@ private fun LogsTabContent(vm: MonitorViewModel) {
         vm.showSnack("已复制 ${logs.size} 行日志到剪贴板")
     }
 
+    fun exportLogs() {
+        val text = logs.joinToString("\n")
+        if (text.isBlank()) {
+            vm.showSnack("无日志可导出")
+            return
+        }
+        val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.CHINA)
+            .format(java.util.Date())
+        val fileName = "Auto_$timestamp.txt"
+        try {
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+            if (!downloadsDir.exists()) downloadsDir.mkdirs()
+            val outFile = java.io.File(downloadsDir, fileName)
+            outFile.writeText(text, Charsets.UTF_8)
+            vm.showSnack("已导出到 Download/$fileName")
+        } catch (e: Exception) {
+            vm.showSnack("导出失败：${e.message}")
+        }
+    }
+
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
             listState.animateScrollToItem(logs.lastIndex)
@@ -1033,6 +1120,20 @@ private fun LogsTabContent(vm: MonitorViewModel) {
                 )
                 Spacer(Modifier.width(4.dp))
                 Text("复制", style = MaterialTheme.typography.labelMedium)
+            }
+            Spacer(Modifier.width(4.dp))
+            TextButton(
+                onClick = { exportLogs() },
+                enabled = logs.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.FileDownload,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("导出", style = MaterialTheme.typography.labelMedium)
             }
             Spacer(Modifier.width(4.dp))
             TextButton(
