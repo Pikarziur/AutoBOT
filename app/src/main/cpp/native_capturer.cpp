@@ -60,9 +60,6 @@
 
 namespace {
 
-// GPU P1-1 helper 需要引用 CapturerContext*：先前向声明（struct 实际定义在下面）
-struct CapturerContext;
-
 // ============================================================================
 // GPU P1-1：EGL/GLES 2.0 渲染器（预览 GPU blit）
 //
@@ -432,6 +429,45 @@ static constexpr size_t  kPreviewBytesPerPixel = 4;
 #endif
 
 // ============================================================================
+// 全局捕获器上下文
+// ============================================================================
+struct CapturerContext {
+    AImageReader*       imageReader    = nullptr;
+    ANativeWindow*      readerWindow   = nullptr;   // AImageReader 的窗口
+    jobject             readerSurface  = nullptr;   // 由 readerWindow 转出的 Java Surface
+
+    // 预览 Surface（Compose 层 SurfaceView 提供）
+    ANativeWindow*      previewWindow  = nullptr;
+    // GPU P2-3：缓存预览窗口已经设置的几何尺寸，setBuffersGeometry 内部 binder 往返只在变化时调用
+    int                 previewBufW    = 0;
+    int                 previewBufH    = 0;
+    // GPU P1-1：EGL/GLES 渲染器 + 运行时启用标志（初始化失败时置 false，回退 CPU blit）
+#if AUTOBOT_EGL_PREVIEW
+    std::unique_ptr<EglRenderer> eglRenderer;
+    std::atomic<bool>            eglEnabled {false};
+#endif
+    std::mutex          previewMutex;
+
+    // 帧缓冲：保存最近一帧 RGBA 数据供识图引擎 / getFrameBufferBitmap 使用
+    std::vector<uint8_t> frameBuffer;
+    int                 fbWidth       = 0;
+    int                 fbHeight      = 0;
+    std::mutex          fbMutex;
+
+    // 配置
+    int                 width         = 0;
+    int                 height        = 0;
+
+    // 统计
+    std::atomic<int64_t> frameCount   {0};
+    std::atomic<bool>    released     {false};
+
+    // JVM 与回调引用
+    JavaVM*             jvm           = nullptr;
+    jobject             javaRef       = nullptr;  // GlobalRef 弱引用 NativeCapturer.kt 实例
+};
+
+// ============================================================================
 // GPU P1-1 / P2-4：统一的帧缓冲 → previewWindow blit 辅助函数
 //
 // 调用方必须保证：
@@ -525,45 +561,6 @@ static inline void blitFrameToPreviewWindow(CapturerContext* ctx,
 
     ANativeWindow_unlockAndPost(pw);
 }
-
-// ============================================================================
-// 全局捕获器上下文
-// ============================================================================
-struct CapturerContext {
-    AImageReader*       imageReader    = nullptr;
-    ANativeWindow*      readerWindow   = nullptr;   // AImageReader 的窗口
-    jobject             readerSurface  = nullptr;   // 由 readerWindow 转出的 Java Surface
-
-    // 预览 Surface（Compose 层 SurfaceView 提供）
-    ANativeWindow*      previewWindow  = nullptr;
-    // GPU P2-3：缓存预览窗口已经设置的几何尺寸，setBuffersGeometry 内部 binder 往返只在变化时调用
-    int                 previewBufW    = 0;
-    int                 previewBufH    = 0;
-    // GPU P1-1：EGL/GLES 渲染器 + 运行时启用标志（初始化失败时置 false，回退 CPU blit）
-#if AUTOBOT_EGL_PREVIEW
-    std::unique_ptr<EglRenderer> eglRenderer;
-    std::atomic<bool>            eglEnabled {false};
-#endif
-    std::mutex          previewMutex;
-
-    // 帧缓冲：保存最近一帧 RGBA 数据供识图引擎 / getFrameBufferBitmap 使用
-    std::vector<uint8_t> frameBuffer;
-    int                 fbWidth       = 0;
-    int                 fbHeight      = 0;
-    std::mutex          fbMutex;
-
-    // 配置
-    int                 width         = 0;
-    int                 height        = 0;
-
-    // 统计
-    std::atomic<int64_t> frameCount   {0};
-    std::atomic<bool>    released     {false};
-
-    // JVM 与回调引用
-    JavaVM*             jvm           = nullptr;
-    jobject             javaRef       = nullptr;  // GlobalRef 弱引用 NativeCapturer.kt 实例
-};
 
 // 进程内全局唯一捕获器（满足 RegisterNatives 的简单实现；多实例需求可改为 map）
 CapturerContext* g_ctx = nullptr;
