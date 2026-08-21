@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -707,7 +706,7 @@ private fun AppLauncherRow(
             ) {
                 if (isMapped) {
                     Icon(
-                        imageVector = Icons.Filled.Stop,
+                        painter = painterResource(R.drawable.ic_stop),
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
