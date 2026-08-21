@@ -584,15 +584,16 @@ private fun FullscreenMonitor(
             ) {
                 previewContent()
 
-                IconButton(
-                    onClick = onExit,
+                Box(
                     modifier = Modifier
                         // ★以按钮自身右上角为锚点（TopEnd 让按钮右上角对齐 VD 右上角），
                         // 适当增大 padding 让按钮往左下偏移，避免紧贴屏幕圆角/边缘导致显示不全
                         .align(Alignment.TopEnd)
                         .padding(top = 14.dp, end = 14.dp)
-                        .size(18.dp)
+                        .size(24.dp)
                         .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        .clickable { onExit() },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Close,
