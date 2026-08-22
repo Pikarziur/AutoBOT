@@ -1,5 +1,6 @@
 package com.autobot.app.server
 
+import android.content.Context
 import android.graphics.PixelFormat
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -435,33 +436,90 @@ object ServerMain {
         }
     }
 
-    /** 首次调用时初始化 InputManager 反射缓存（幂等：inputManagerInited 标记位防重复）。 */
+    /**
+     * 首次调用时初始化 InputManager 反射缓存（幂等：inputManagerInited 标记位防重复）。
+     *
+     * 真实注入策略（对照 MAA-Meow InputControlUtils / third.wrappers.InputManager 实现）：
+     *   1) 优先：通过 Context.getSystemService(INPUT_SERVICE) 获取公开 InputManager 实例
+     *      —— MAA-Meow 同款，Android 1~35+ 都有效，完全绕过 Android 17 移除的
+     *      InputManager.getInstance() @hide 静态方法反射。
+     *   2) 兼容兜底：老设备上用 InputManager.getInstance() @hide 反射
+     *   3) 最后兜底：都失败时 fallback 到 shell "input -d <displayId>" 命令
+     */
     private fun ensureInputManagerReflection() {
         if (inputManagerInited) return
         inputManagerInited = true
-        try {
-            val imClass = Class.forName("android.hardware.input.InputManager")
-            val getInstance = imClass.getDeclaredMethod("getInstance")
-            getInstance.isAccessible = true
-            inputManagerInstance = getInstance.invoke(null)
-            injectMethod = imClass.getMethod("injectInputEvent",
-                android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
-            // MotionEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
-            setDisplayIdMethod = android.view.MotionEvent::class.java
-                .getMethod("setDisplayId", Int::class.javaPrimitiveType)
-            // KeyEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
-            // 与 MotionEvent 分开反射：避免 MotionEvent 类找不到时连带失败
-            setDisplayIdKeyEventMethod = android.view.KeyEvent::class.java
-                .getMethod("setDisplayId", Int::class.javaPrimitiveType)
-            useShellInjection = false
-            Log.i(TAG, "✅ IInputManager reflection initialized")
-        } catch (e: Exception) {
-            // Android 17+ 已移除 InputManager.getInstance @hide API，
-            // 退化为使用 shell "input -d <displayId>" 命令注入（和 adb shell input 同一条通路）。
-            useShellInjection = true
-            Log.w(TAG, "IInputManager reflection init failed, fallback to shell input -d: " +
-                    "${e.javaClass.simpleName}: ${e.message}")
+
+        val imClass = try {
+            Class.forName("android.hardware.input.InputManager")
+        } catch (_: Throwable) {
+            null
         }
+
+        var acquired: Any? = null
+        var lastErr: String? = null
+
+        // --- 策略 1（MAA-Meow 同款）：Context.getSystemService(INPUT_SERVICE) ---
+        if (acquired == null) {
+            try {
+                val ctx = FakeContext.get()
+                val svc = ctx.getSystemService(Context.INPUT_SERVICE)
+                if (svc != null && imClass != null && imClass.isInstance(svc)) {
+                    acquired = svc
+                    Log.i(TAG, "✅ InputManager acquired via Context.getSystemService(INPUT_SERVICE) " +
+                            "(MAA-Meow compatible path)")
+                } else if (svc != null) {
+                    Log.w(TAG, "getSystemService(INPUT_SERVICE) returned ${svc.javaClass.name}, " +
+                            "not assignable to android.hardware.input.InputManager, continue fallback")
+                }
+            } catch (e: Throwable) {
+                lastErr = "getSystemService: ${e.javaClass.simpleName}: ${e.message}"
+                Log.w(TAG, "InputManager via getSystemService failed: $lastErr")
+            }
+        }
+
+        // --- 策略 2（老兼容）：反射 InputManager.getInstance() @hide ---
+        if (acquired == null && imClass != null) {
+            try {
+                val getInstance = imClass.getDeclaredMethod("getInstance")
+                getInstance.isAccessible = true
+                acquired = getInstance.invoke(null)
+                Log.i(TAG, "✅ InputManager acquired via reflection getInstance() (legacy path)")
+            } catch (e: Throwable) {
+                lastErr = (lastErr ?: "") + "; getInstance: ${e.javaClass.simpleName}: ${e.message}"
+                Log.w(TAG, "InputManager.getInstance reflection failed: " +
+                        "${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+
+        if (acquired != null && imClass != null) {
+            try {
+                inputManagerInstance = acquired
+                injectMethod = imClass.getMethod("injectInputEvent",
+                    android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
+                // MotionEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
+                setDisplayIdMethod = android.view.MotionEvent::class.java
+                    .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+                // KeyEvent.setDisplayId(int) — API 30 public, API 26-29 @hide
+                setDisplayIdKeyEventMethod = android.view.KeyEvent::class.java
+                    .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+                useShellInjection = false
+                Log.i(TAG, "✅ IInputManager reflection initialized (injectInputEvent + setDisplayId)")
+                return
+            } catch (e: Throwable) {
+                lastErr = (lastErr ?: "") + "; inject/setDisplayId: ${e.javaClass.simpleName}: ${e.message}"
+                Log.w(TAG, "injectInputEvent / setDisplayId reflection failed: " +
+                        "${e.javaClass.simpleName}: ${e.message}")
+                inputManagerInstance = null
+                injectMethod = null
+                setDisplayIdMethod = null
+                setDisplayIdKeyEventMethod = null
+            }
+        }
+
+        // --- 策略 3（最后兜底）：shell "input -d" 命令注入 ---
+        useShellInjection = true
+        Log.w(TAG, "InputManager injection paths all failed, fallback to shell input -d: $lastErr")
     }
 
     // ---- Shell fallback 注入（Android 17+ IInputManager 反射失效时启用） ----
