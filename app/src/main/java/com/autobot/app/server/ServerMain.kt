@@ -320,6 +320,13 @@ object ServerMain {
     private var setDisplayIdMethod: java.lang.reflect.Method? = null       // MotionEvent.setDisplayId
     private var setDisplayIdKeyEventMethod: java.lang.reflect.Method? = null  // KeyEvent.setDisplayId
     private var inputManagerInited = false
+    /** Android 17+ 移除了 InputManager.getInstance 反射，fallback 到 shell input -d 命令注入 */
+    @Volatile private var useShellInjection = false
+    /** shell fallback 下缓存的 DOWN 信息（用于 MOVE 攒到 UP 时发 swipe） */
+    private data class PendingDown(val x: Int, val y: Int, val atMs: Long)
+    @Volatile private var pendingDown: PendingDown? = null
+    /** shell fallback 下最后一次 MOVE 的坐标（UP 时作为 swipe 终点） */
+    @Volatile private var lastMove: Pair<Int, Int>? = null
 
     /**
      * 使用 IInputManager.injectInputEvent() 反射注入 MotionEvent 到虚拟显示器（MAA-Meow/scrcpy 同款）。
@@ -341,6 +348,11 @@ object ServerMain {
 
         try {
             ensureInputManagerReflection()
+
+            if (useShellInjection) {
+                shellInjectMotion(action, x, y)
+                return
+            }
 
             val im = inputManagerInstance ?: return
             val inject = injectMethod ?: return
@@ -383,6 +395,11 @@ object ServerMain {
 
         try {
             ensureInputManagerReflection()
+
+            if (useShellInjection) {
+                shellInjectKeyBack()
+                return
+            }
 
             val im = inputManagerInstance ?: return
             val inject = injectMethod ?: return
@@ -436,9 +453,71 @@ object ServerMain {
             // 与 MotionEvent 分开反射：避免 MotionEvent 类找不到时连带失败
             setDisplayIdKeyEventMethod = android.view.KeyEvent::class.java
                 .getMethod("setDisplayId", Int::class.javaPrimitiveType)
+            useShellInjection = false
             Log.i(TAG, "✅ IInputManager reflection initialized")
         } catch (e: Exception) {
-            Log.e(TAG, "IInputManager reflection init failed", e)
+            // Android 17+ 已移除 InputManager.getInstance @hide API，
+            // 退化为使用 shell "input -d <displayId>" 命令注入（和 adb shell input 同一条通路）。
+            useShellInjection = true
+            Log.w(TAG, "IInputManager reflection init failed, fallback to shell input -d: " +
+                    "${e.javaClass.simpleName}: ${e.message}")
         }
+    }
+
+    // ---- Shell fallback 注入（Android 17+ IInputManager 反射失效时启用） ----
+
+    /** 执行 shell 命令并等待完成，返回是否成功。禁止在主线程调用。 */
+    private fun execShell(cmd: String): Boolean {
+        return try {
+            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val ok = proc.waitFor() == 0
+            if (!ok) {
+                val err = proc.errorStream.bufferedReader().readText().trim()
+                if (err.isNotBlank()) Log.w(TAG, "execShell failed: $err")
+            }
+            ok
+        } catch (e: Exception) {
+            Log.w(TAG, "execShell(${cmd.take(60)}): ${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * 使用 shell "input -d" 命令注入触摸。
+     * - DOWN：仅缓存起点，不立刻发（input tap/swipe 都需要完整手势）
+     * - MOVE：仅更新 lastMove（最终 UP 时一起 swipe）
+     * - UP / CANCEL：如果有移动就 swipe，否则 tap
+     */
+    private fun shellInjectMotion(action: Int, x: Int, y: Int) {
+        val displayId = cachedDisplayId
+        if (displayId < 0) return
+        when (action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                pendingDown = PendingDown(x, y, android.os.SystemClock.uptimeMillis())
+                lastMove = null
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                lastMove = x to y
+            }
+            android.view.MotionEvent.ACTION_UP,
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                val down = pendingDown
+                pendingDown = null
+                val endPt = lastMove ?: (x to y)
+                lastMove = null
+                val durationMs = down?.let { (android.os.SystemClock.uptimeMillis() - it.atMs).toInt().coerceIn(30, 2000) } ?: 50
+                if (down != null && (down.x != endPt.first || down.y != endPt.second || durationMs > 120)) {
+                    execShell("input -d $displayId swipe ${down.x} ${down.y} ${endPt.first} ${endPt.second} $durationMs")
+                } else if (down != null) {
+                    execShell("input -d $displayId tap ${down.x} ${down.y}")
+                }
+            }
+        }
+    }
+
+    private fun shellInjectKeyBack() {
+        val displayId = cachedDisplayId
+        if (displayId < 0) return
+        execShell("input -d $displayId keyevent KEYCODE_BACK")
     }
 }
