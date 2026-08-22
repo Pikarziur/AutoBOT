@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
@@ -69,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -145,13 +147,45 @@ fun TasksScreen(
         }
     }
 
+    // 全屏下 SurfaceView 原生触摸的上一次 VD 坐标（用于 MOVE 事件的 fromX/fromY）
+    var lastTouchVx by remember { mutableIntStateOf(0) }
+    var lastTouchVy by remember { mutableIntStateOf(0) }
+
     val previewContent = remember {
         androidx.compose.runtime.movableContentOf {
             PreviewContent(
                 vm = vm,
                 isFullscreen = isFullscreen,
                 onSurfaceAvailable = { isSurfaceAvailable = true },
-                onSurfaceDestroyed = { isSurfaceAvailable = false }
+                onSurfaceDestroyed = { isSurfaceAvailable = false },
+                onPreviewTouch = { viewX, viewY, viewWidth, viewHeight, action ->
+                    if (!isFullscreen) return@PreviewContent
+                    val (bufW, bufH) = vm.displaySize.value
+                    val mapped = viewToVirtualDisplay(
+                        viewX = viewX,
+                        viewY = viewY,
+                        viewWidth = viewWidth,
+                        viewHeight = viewHeight,
+                        bufferWidth = bufW,
+                        bufferHeight = bufH
+                    ) ?: return@PreviewContent
+                    val (vx, vy) = mapped
+                    when (action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            lastTouchVx = vx
+                            lastTouchVy = vy
+                            vm.onTouchDown(vx, vy)
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            vm.onTouchMove(lastTouchVx, lastTouchVy, vx, vy)
+                            lastTouchVx = vx
+                            lastTouchVy = vy
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            vm.onTouchUp(vx, vy)
+                        }
+                    }
+                }
             )
         }
     }
@@ -541,56 +575,10 @@ private fun FullscreenMonitor(
                     .width(previewW)
                     .height(previewH)
             ) {
+                // ★ VD 画面：触摸通过 PreviewContent 内部 SurfaceView 的原生 OnTouchListener
+                // 直接回调 onPreviewTouch（见 TasksScreen.kt 第 149-190 行），不走 Compose pointerInput，
+                // 解决 Android 15+ SurfaceView 抢事件导致覆盖层收不到触摸的兼容问题。
                 previewContent()
-
-                // ★ 透明触摸覆盖层：在 z-order 上高于 SurfaceView，
-                // 捕获 pointerInput 事件，避免 AndroidView(SurfaceView) 原生消费触摸导致 Compose 收不到回调
-                // （与非全屏预览区 TasksScreen.kt 第 417-426 行透明覆盖层同一思路）
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(bufferWidth, bufferHeight) {
-                            var lastX = 0
-                            var lastY = 0
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull() ?: continue
-                                    val viewX = change.position.x.toInt()
-                                    val viewY = change.position.y.toInt()
-
-                                    val mapped = viewToVirtualDisplay(
-                                        viewX = viewX,
-                                        viewY = viewY,
-                                        viewWidth = size.width,
-                                        viewHeight = size.height,
-                                        bufferWidth = bufferWidth,
-                                        bufferHeight = bufferHeight
-                                    )
-
-                                    if (mapped == null) continue
-
-                                    val (vx, vy) = mapped
-                                    when (event.type) {
-                                        PointerEventType.Press -> {
-                                            lastX = vx
-                                            lastY = vy
-                                            vm.onTouchDown(vx, vy)
-                                        }
-                                        PointerEventType.Move -> {
-                                            vm.onTouchMove(lastX, lastY, vx, vy)
-                                            lastX = vx
-                                            lastY = vy
-                                        }
-                                        PointerEventType.Release -> {
-                                            vm.onTouchUp(vx, vy)
-                                        }
-                                        else -> { }
-                                    }
-                                }
-                            }
-                        }
-                )
 
                 Box(
                     modifier = Modifier

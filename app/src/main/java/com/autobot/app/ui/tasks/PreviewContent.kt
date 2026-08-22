@@ -2,6 +2,7 @@ package com.autobot.app.ui.tasks
 
 import android.graphics.Canvas
 import android.graphics.PixelFormat
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
@@ -24,7 +25,15 @@ fun PreviewContent(
     vm: MonitorViewModel,
     isFullscreen: Boolean,
     onSurfaceAvailable: () -> Unit = {},
-    onSurfaceDestroyed: () -> Unit = {}
+    onSurfaceDestroyed: () -> Unit = {},
+    /**
+     * 原生 SurfaceView 触摸回调（绕过 Compose 的 pointerInput，
+     * 避免 Android 15+ 下 SurfaceView 抢事件导致 Compose 覆盖层收不到触摸）。
+     * actionMasked: MotionEvent.ACTION_DOWN / ACTION_MOVE / ACTION_UP / ACTION_CANCEL
+     * viewWidth / viewHeight: 当前 SurfaceView 自身的像素尺寸，用于调用方做坐标映射
+     */
+    onPreviewTouch: (viewX: Int, viewY: Int, viewWidth: Int, viewHeight: Int, actionMasked: Int) -> Unit =
+        { _, _, _, _, _ -> }
 ) {
     val displaySize by vm.displaySize.collectAsStateWithLifecycle()
     // VD 停止后清空 Surface 最后一帧的信号（自增计数）
@@ -111,6 +120,33 @@ fun PreviewContent(
             },
             update = { view: SurfaceView ->
                 view.setOnClickListener(null)
+
+                // ★ 直接在 SurfaceView 上挂原生 OnTouchListener：
+                // Android 15+ 下 SurfaceView 的触摸派发优先级高于 Compose 的 pointerInput，
+                // 用覆盖层仍然收不到事件，只能直接在 SurfaceView 上拦截。
+                // 放在 update 里而不是 factory 里，保证 isFullscreen / onPreviewTouch
+                // 变化时（全屏切换）能刷新最新闭包（factory 只在首次创建时跑一次）。
+                // isFullscreen 才拦截触摸，非全屏时交给上层透明 clickable Box 处理（进入全屏）
+                view.setOnTouchListener { v, event ->
+                    if (!isFullscreen) return@setOnTouchListener false
+                    val action = event.actionMasked
+                    if (action == MotionEvent.ACTION_DOWN ||
+                        action == MotionEvent.ACTION_MOVE ||
+                        action == MotionEvent.ACTION_UP ||
+                        action == MotionEvent.ACTION_CANCEL
+                    ) {
+                        onPreviewTouch(
+                            event.x.toInt(),
+                            event.y.toInt(),
+                            v.width,
+                            v.height,
+                            action
+                        )
+                        true
+                    } else {
+                        false
+                    }
+                }
 
                 val currentSize = lastFixedSize
                 val desiredW = bufferWidth
