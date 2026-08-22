@@ -540,49 +540,57 @@ private fun FullscreenMonitor(
                 modifier = Modifier
                     .width(previewW)
                     .height(previewH)
-                    .pointerInput(bufferWidth, bufferHeight) {
-                        var lastX = 0
-                        var lastY = 0
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull() ?: continue
-                                val viewX = change.position.x.toInt()
-                                val viewY = change.position.y.toInt()
+            ) {
+                previewContent()
 
-                                val mapped = viewToVirtualDisplay(
-                                    viewX = viewX,
-                                    viewY = viewY,
-                                    viewWidth = size.width,
-                                    viewHeight = size.height,
-                                    bufferWidth = bufferWidth,
-                                    bufferHeight = bufferHeight
-                                )
+                // ★ 透明触摸覆盖层：在 z-order 上高于 SurfaceView，
+                // 捕获 pointerInput 事件，避免 AndroidView(SurfaceView) 原生消费触摸导致 Compose 收不到回调
+                // （与非全屏预览区 TasksScreen.kt 第 417-426 行透明覆盖层同一思路）
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(bufferWidth, bufferHeight) {
+                            var lastX = 0
+                            var lastY = 0
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull() ?: continue
+                                    val viewX = change.position.x.toInt()
+                                    val viewY = change.position.y.toInt()
 
-                                if (mapped == null) continue
+                                    val mapped = viewToVirtualDisplay(
+                                        viewX = viewX,
+                                        viewY = viewY,
+                                        viewWidth = size.width,
+                                        viewHeight = size.height,
+                                        bufferWidth = bufferWidth,
+                                        bufferHeight = bufferHeight
+                                    )
 
-                                val (vx, vy) = mapped
-                                when (event.type) {
-                                    PointerEventType.Press -> {
-                                        lastX = vx
-                                        lastY = vy
-                                        vm.onTouchDown(vx, vy)
+                                    if (mapped == null) continue
+
+                                    val (vx, vy) = mapped
+                                    when (event.type) {
+                                        PointerEventType.Press -> {
+                                            lastX = vx
+                                            lastY = vy
+                                            vm.onTouchDown(vx, vy)
+                                        }
+                                        PointerEventType.Move -> {
+                                            vm.onTouchMove(lastX, lastY, vx, vy)
+                                            lastX = vx
+                                            lastY = vy
+                                        }
+                                        PointerEventType.Release -> {
+                                            vm.onTouchUp(vx, vy)
+                                        }
+                                        else -> { }
                                     }
-                                    PointerEventType.Move -> {
-                                        vm.onTouchMove(lastX, lastY, vx, vy)
-                                        lastX = vx
-                                        lastY = vy
-                                    }
-                                    PointerEventType.Release -> {
-                                        vm.onTouchUp(vx, vy)
-                                    }
-                                    else -> { }
                                 }
                             }
                         }
-                    }
-            ) {
-                previewContent()
+                )
 
                 Box(
                     modifier = Modifier
